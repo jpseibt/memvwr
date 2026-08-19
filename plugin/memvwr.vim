@@ -19,7 +19,9 @@ let g:loaded_memvwr = 1
 "============================================================
 " TODO notes:
 " [ ] consider changing namespace style variables (s:memvwr_bufnr) for
-"     a s:memvwr dict, maybe one for "private" state and other for config.
+"  ^  a s:memvwr dict, maybe one for "private" state and other for config.
+" NOTE: probably would lead to unnecessary overhead when accessing
+"       state variables, needing to run the dict hashing constantly.
 " [x] strip leading zeros or prefix from addresses (option).
 " [ ] width change (option: grouping bytes).
 " [ ] make reformat commands/function smarter, without redoing all the work
@@ -39,7 +41,7 @@ let g:loaded_memvwr = 1
 "       previous visualization (step). Even crazier, diffing two views, or whatever.
 " [ ] reformat commands should save the cursor location (byte number under cursor)
 " [ ] edit values, both from bytes field or ascii preview.
-" [ ] create memvwr from file.
+" [x] create memvwr from file.
 " [ ] save to file.
 " [ ] poke memory of debuggee (termdebug).
 " [ ] add more information about analysed dump: expression, timestamp, ... (termdebug).
@@ -54,51 +56,96 @@ let g:loaded_memvwr = 1
 " [ ] visual mode could match-highlight the bytes selected.
 " [ ] select endianness.
 
-if !exists('s:memvwr_name')
-  let s:memvwr_name          = '(MEMVWR)'
-  let s:memvwr_bufnr         = 0
-  let s:memvwr_winid         = 0
-  let s:memvwr_blob          = 0z
-  let s:memvwr_start_addr    = 0x0
-  let s:memvwr_bytes_per_row = 16
-  let s:memvwr_fmt           = 'hex'
-  let s:memvwr_fmt_width     = 2 "ff a8 8b " (width without separator ' ')
-  let s:memvwr_addr_style    = 0
+let s:memvwr_name          = '(MEMVWR)'
+let s:memvwr_bufnr         = 0
+let s:memvwr_winid         = 0
+let s:memvwr_blob          = 0z
+let s:memvwr_start_addr    = 0x0
+let s:memvwr_bytes_per_row = 16
+let s:memvwr_fmt           = 'hex'
+let s:memvwr_fmt_width     = 2 "ff a8 8b " (width without separator ' ')
 
-  "------------------------------
-  " UI & Layout
-  "
-  " winbar is used to display the header on Neovim, but the statusline is used on Vim (so it's a footer -_-)
-  let s:memvwr_addr_label_cache = 'MEMVWR     Address'
-  let s:memvwr_header_str       = 'MEMVWR     Address   0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F            ASCII'
-                                  "0x0000555555556004: 62 72 65 61 6b 00 63 61 73 65 00 63 68 61 72 00  break.case.char.
-                                  "BPR:16              |                                                |
-                                  "FMT:hex        col:21                                           col:70
-                                  "ADDR_STYLE:0
-                                  "           0: full 8 bytes, with '0x' prefix
-                                  "           1: full 8 bytes, without prefix
-                                  "           2: strip leading zeros (from stop address), always with '0x' prefix
-                                  "           3: strip leading zeros (from stop address), without prefix (len > 2)
-                                  "           NOTE: a minimum of 4 digits will be used for both styles 2 and 3, but
-                                  "                 if the stop address is <= 2 digits long, it will have the prefix.
-  let s:memvwr_column_bytes   = 21
-  let s:memvwr_column_ascii   = 70
-  let s:memvwr_format_strings = {'addr': '0x%16x:', 'bytes': '%02x'}
-  let s:memvwr_cursor_match   = [] " [line, column, highlight len]
-endif
+"------------------------------
+" UI & Layout
+"
+" winbar is used to display the header on Neovim, but the statusline is used on Vim (so it's a footer -_-)
+let s:memvwr_addr_style       = 0
+let s:memvwr_addr_label_cache = 'MEMVWR     Address'
+let s:memvwr_header_str       = 'MEMVWR     Address   0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F            ASCII'
+                                "0x0000555555556004: 62 72 65 61 6b 00 63 61 73 65 00 63 68 61 72 00  break.case.char.
+                                "BPR:16              |                                                |
+                                "FMT:hex        col:21                                           col:70
+                                "ADDR_STYLE:0
+                                "           0: full 8 bytes, with '0x' prefix
+                                "           1: full 8 bytes, without prefix
+                                "           2: strip leading zeros (from stop address), always with '0x' prefix
+                                "           3: strip leading zeros (from stop address), without prefix (len > 2)
+                                "           NOTE: a minimum of 4 digits will be used for both styles 2 and 3, but
+                                "                 if the stop address is <= 2 digits long, it will have the prefix.
+let s:memvwr_column_bytes   = 21
+let s:memvwr_column_ascii   = 70
+let s:memvwr_format_strings = {'addr': '0x%16x:', 'bytes': '%02x'}
+let s:memvwr_cursor_match   = [] " [line, column, highlight len]
 
-" TODO: Return config dict, similar to `getwininfo()`
+" Return dictionary with all state and config variables,
+" similar to `getwininfo()`, or return them individually
 function! MemvwrGetInfo(key='all')
-  echomsg '[MemvwrGetInfo()] Not yet ready'
-  if a:key == 'bpr'
-    return s:memvwr_bytes_per_row
-  elseif a:key == 'fmt'
-    return s:memvwr_fmt
-  elseif a:key == 'addr_style'
-    return s:memvwr_addr_style
+  let l:result = {}
+
+  if a:key != 'all'
+    if a:key == 'name'
+      let l:result = s:memvwr_name
+    elseif a:key == 'bufnr'
+      let l:result = s:memvwr_bufnr
+    elseif a:key == 'winid'
+      let l:result = s:memvwr_winid
+    elseif a:key == 'blob'
+      let l:result = s:memvwr_blob
+    elseif a:key == 'start_addr'
+      let l:result = s:memvwr_start_addr
+    elseif a:key == 'bytes_per_row'
+      let l:result = s:memvwr_bytes_per_row
+    elseif a:key == 'fmt'
+      let l:result = s:memvwr_fmt
+    elseif a:key == 'fmt_width'
+      let l:result = s:memvwr_fmt_width
+    elseif a:key == 'addr_style'
+      let l:result = s:memvwr_addr_style
+    elseif a:key == 'addr_label_cache'
+      let l:result = s:memvwr_addr_label_cache
+    elseif a:key == 'header_str'
+      let l:result = s:memvwr_header_str
+    elseif a:key == 'column_bytes'
+      let l:result = s:memvwr_column_bytes
+    elseif a:key == 'column_ascii'
+      let l:result = s:memvwr_column_ascii
+    elseif a:key == 'format_strings'
+      let l:result = s:memvwr_format_strings
+    elseif a:key == 'cursor_match'
+      let l:result = s:memvwr_cursor_match
+    endif
+
   else
-    return {'bpr': s:memvwr_bytes_per_row, 'fmt': s:memvwr_fmt, 'addr_style': s:memvwr_addr_style, 'format_strings': s:memvwr_format_strings}
+    let l:result = {
+          \   'name': s:memvwr_name
+          \ , 'bufnr': s:memvwr_bufnr
+          \ , 'winid': s:memvwr_winid
+          \ , 'blob': s:memvwr_blob
+          \ , 'start_addr': s:memvwr_start_addr
+          \ , 'bytes_per_row': s:memvwr_bytes_per_row
+          \ , 'fmt': s:memvwr_fmt
+          \ , 'fmt_width': s:memvwr_fmt_width
+          \ , 'addr_style': s:memvwr_addr_style
+          \ , 'addr_label_cache': s:memvwr_addr_label_cache
+          \ , 'header_str': s:memvwr_header_str
+          \ , 'column_bytes': s:memvwr_column_bytes
+          \ , 'column_ascii': s:memvwr_column_ascii
+          \ , 'format_strings': s:memvwr_format_strings
+          \ , 'cursor_match': s:memvwr_cursor_match
+          \ }
   endif
+
+  return l:result
 endfunction
 
 " Create and setup buffer/window variables, or goto Memvwr window

@@ -50,7 +50,7 @@ let g:loaded_memvwr = 1
 " [ ] maybe an inspector field or window, if it is proven to not slow down cursor
 "     movements and highlight matches.(?)
 " [ ] command to print byte number under the cursor, could also use floating win.
-" [ ] command to jump cursor to N'th byte: from start byte, from byte under the
+" [o] command to jump cursor to N'th byte: from start byte, from byte under the
 "     cursor, N'th byte of current row, etc.
 " [ ] maybe add a decimal representation style for addresses (byte count).
 " [ ] visual mode could match-highlight the bytes selected.
@@ -448,6 +448,49 @@ function! s:MemvwrJumpCursorMatch()
   endif
 endfunction
 
+" TODO: bulletproof this.
+" Return blob index for a byte and coordinates in a list [blob_idx, line, bytes col, ascii col]
+" Modes:
+"   0: Absolute | blob index N (0 is the first byte)
+"   1: Relative | offset N bytes from current byte under cursor (supports negative N)
+"   2: Row Byte | byte index N of the current row under cursor (0 to bytes_per_row - 1)
+function! s:MemvwrGetByteInfo(number, mode=0)
+  let l:result = []
+  let l:blob_idx = -1
+
+  if a:mode == 0
+    let l:blob_idx = a:number
+
+  elseif win_getid() == s:memvwr_winid
+    if a:mode == 1 && s:memvwr_cursor_is_valid
+      let l:blob_idx = s:memvwr_cursor_blob_idx + a:number
+
+    elseif a:mode == 2 && a:number >= 0 && a:number < s:memvwr_bytes_per_row
+      let l:result = [
+            \   s:memvwr_cursor_blob_idx + a:number
+            \ , s:memvwr_cursor_line
+            \ , s:memvwr_column_bytes + a:number * (s:memvwr_fmt_width + 1)
+            \ , s:memvwr_column_ascii + a:number
+            \ ]
+    endif
+  endif
+
+  if l:blob_idx >= 0 && l:blob_idx < s:memvwr_blob_len
+    let l:line = l:blob_idx / s:memvwr_bytes_per_row + 1
+    let l:row_byte_number = l:blob_idx
+
+    if l:blob_idx > s:memvwr_bytes_per_row - 1
+      let l:row_byte_number = l:blob_idx - (l:line - 1) * s:memvwr_bytes_per_row
+    endif
+
+    let l:bytes_col = s:memvwr_column_bytes + l:row_byte_number * (s:memvwr_fmt_width + 1)
+    let l:ascii_col = s:memvwr_column_ascii + l:row_byte_number
+    let l:result = [l:blob_idx, l:line, l:bytes_col, l:ascii_col]
+  endif
+
+  return l:result
+endfunction
+
 "------------------------------
 " Commands and maps
 "
@@ -461,6 +504,9 @@ command! -nargs=1 MemvwrRefmt   call s:MemvwrOpen() | call MemvwrFromBlob(s:memv
 command! -nargs=1 MemvwrRestyle call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, s:memvwr_bytes_per_row, s:memvwr_fmt, <args>)
 
 command! -nargs=1 -complete=file MemvwrFopen call s:MemvwrOpen() | call MemvwrFromFile(<q-args>, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
+
+" TODO: finish command, maybe add count, ranges, etc., and follow some naming convention
+command! -nargs=+ Bjump let binfo = s:MemvwrGetByteInfo(<f-args>) | echo binfo | if !empty(binfo) | call cursor(binfo[1], binfo[2]) | endif
 
 augroup MemvwrAUG
   autocmd!
@@ -487,8 +533,8 @@ func! DebugMemvwr()
   echomsg printf("%-*s", 28, 's:memvwr_addr_label_cache:') . s:memvwr_addr_label_cache
   echomsg printf("%-*s", 28, 's:memvwr_column_bytes:')     . s:memvwr_column_bytes
   echomsg printf("%-*s", 28, 's:memvwr_column_ascii:')     . s:memvwr_column_ascii
-  echomsg printf("%-*s", 28, 's:memvwr_format_str_addr:')  . s:memvwr_format_str_addr)
-  echomsg printf("%-*s", 28, 's:memvwr_format_str_bytes:') . s:memvwr_format_str_bytes)
+  echomsg printf("%-*s", 28, 's:memvwr_format_str_addr:')  . s:memvwr_format_str_addr
+  echomsg printf("%-*s", 28, 's:memvwr_format_str_bytes:') . s:memvwr_format_str_bytes
   echomsg printf("%-*s", 28, 's:memvwr_cursor_line:')      . s:memvwr_cursor_line
   echomsg printf("%-*s", 28, 's:memvwr_cursor_col:')       . s:memvwr_cursor_col
   echomsg printf("%-*s", 28, 's:memvwr_cursor_is_valid:')  . s:memvwr_cursor_is_valid

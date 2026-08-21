@@ -50,7 +50,7 @@ let g:loaded_memvwr = 1
 " [ ] maybe an inspector field or window, if it is proven to not slow down cursor
 "     movements and highlight matches.(?)
 " [ ] command to print byte number under the cursor, could also use floating win.
-" [o] command to jump cursor to N'th byte: from start byte, from byte under the
+" [x] command to jump cursor to N'th byte: from start byte, from byte under the
 "     cursor, N'th byte of current row, etc.
 " [ ] maybe add a decimal representation style for addresses (byte count).
 " [ ] visual mode could match-highlight the bytes selected.
@@ -180,6 +180,40 @@ function! MemvwrGetInfo(key='all')
   return l:result
 endfunction
 
+" Return blob index for a byte and coordinates in a list [blob_idx, line, bytes col, ascii col]
+" Modes:
+"   0: Absolute | byte at blob index N (0 is the first byte)
+"   1: Relative | offset N bytes from current byte under cursor (supports negative N)
+"   2: Row Byte | row byte N of the cursor line (0 to bytes_per_row - 1)
+function! MemvwrGetByteInfo(number, mode=0)
+  let l:result = []
+  let l:blob_idx = -1
+
+  if a:mode == 0
+    let l:blob_idx = a:number
+
+  elseif win_getid() == s:memvwr_winid
+    if a:mode == 1 && s:memvwr_cursor_is_valid
+      let l:blob_idx = s:memvwr_cursor_blob_idx + a:number
+
+    elseif a:mode == 2 && a:number >= 0 && a:number < s:memvwr_bytes_per_row
+      let l:blob_idx = (s:memvwr_cursor_line - 1) * s:memvwr_bytes_per_row + a:number
+
+    endif
+  endif
+
+  if l:blob_idx >= 0 && l:blob_idx < s:memvwr_blob_len
+    let l:line = l:blob_idx / s:memvwr_bytes_per_row + 1
+    let l:row_byte_number = l:blob_idx % s:memvwr_bytes_per_row
+
+    let l:bytes_col = s:memvwr_column_bytes + l:row_byte_number * (s:memvwr_fmt_width + 1)
+    let l:ascii_col = s:memvwr_column_ascii + l:row_byte_number
+    let l:result = [l:blob_idx, l:line, l:bytes_col, l:ascii_col]
+  endif
+
+  return l:result
+endfunction
+
 " Create and setup buffer/window variables, or goto Memvwr window
 function! s:MemvwrOpen()
   if !win_gotoid(s:memvwr_winid)
@@ -239,7 +273,7 @@ function! MemvwrHeaderSlice()
   let l:leftcol = l:wininfo[0].leftcol
   let l:textoff = l:wininfo[0].textoff
   let l:padding = repeat(' ', l:textoff)
-  let l:header_slice_normal = l:padding . slice(s:memvwr_header_str, l:leftcol)
+  let l:header_slice_normal = l:padding . s:memvwr_header_str[l:leftcol:]
   " Append `%<` to truncate the line at the end if too long
   return l:header_slice_normal . '%<'
 endfunction
@@ -442,53 +476,40 @@ function! s:MemvwrCursorMatchByteAndASCII()
   endif
 endfunction
 
-function! s:MemvwrJumpCursorMatch()
+function! s:MemvwrSetCursorToMatch()
   if win_getid() == s:memvwr_winid && s:memvwr_cursor_is_valid
     call cursor(s:memvwr_cursor_line, s:memvwr_cursor_match_col)
   endif
 endfunction
 
-" TODO: bulletproof this.
-" Return blob index for a byte and coordinates in a list [blob_idx, line, bytes col, ascii col]
-" Modes:
-"   0: Absolute | blob index N (0 is the first byte)
-"   1: Relative | offset N bytes from current byte under cursor (supports negative N)
-"   2: Row Byte | byte index N of the current row under cursor (0 to bytes_per_row - 1)
-function! s:MemvwrGetByteInfo(number, mode=0)
-  let l:result = []
-  let l:blob_idx = -1
+function! s:MemvwrSetCursorToByte(cmd_str)
+  if empty(a:cmd_str) || !win_gotoid(s:memvwr_winid) | return | endif
 
-  if a:mode == 0
-    let l:blob_idx = a:number
+  let l:mode    = 0
+  let l:sign    = 1
+  let l:num_str = a:cmd_str
 
-  elseif win_getid() == s:memvwr_winid
-    if a:mode == 1 && s:memvwr_cursor_is_valid
-      let l:blob_idx = s:memvwr_cursor_blob_idx + a:number
-
-    elseif a:mode == 2 && a:number >= 0 && a:number < s:memvwr_bytes_per_row
-      let l:result = [
-            \   s:memvwr_cursor_blob_idx + a:number
-            \ , s:memvwr_cursor_line
-            \ , s:memvwr_column_bytes + a:number * (s:memvwr_fmt_width + 1)
-            \ , s:memvwr_column_ascii + a:number
-            \ ]
-    endif
+  if a:cmd_str[0] == '+' || a:cmd_str[0] == '-'
+    let l:mode    = 1
+    let l:sign    = (a:cmd_str[0] == '-') ? -1 : 1
+    let l:num_str = a:cmd_str[1:]
+  elseif a:cmd_str[0] == '|'
+    let l:mode   = 2
+    let l:num_str = a:cmd_str[1:]
   endif
 
-  if l:blob_idx >= 0 && l:blob_idx < s:memvwr_blob_len
-    let l:line = l:blob_idx / s:memvwr_bytes_per_row + 1
-    let l:row_byte_number = l:blob_idx
-
-    if l:blob_idx > s:memvwr_bytes_per_row - 1
-      let l:row_byte_number = l:blob_idx - (l:line - 1) * s:memvwr_bytes_per_row
-    endif
-
-    let l:bytes_col = s:memvwr_column_bytes + l:row_byte_number * (s:memvwr_fmt_width + 1)
-    let l:ascii_col = s:memvwr_column_ascii + l:row_byte_number
-    let l:result = [l:blob_idx, l:line, l:bytes_col, l:ascii_col]
+  let l:base = 10
+  if strlen(l:num_str) > 1 && l:num_str[0] == '0'
+    let l:ch = l:num_str[1]
+    let l:base = (l:ch ==? 'x') ? 16
+             \ : (l:ch ==? 'b') ? 2
+             \ :                  8
   endif
 
-  return l:result
+  let l:number = str2nr(l:num_str, l:base) * l:sign
+
+  let l:byte_info = MemvwrGetByteInfo(l:number, l:mode)
+  if !empty(l:byte_info) | call cursor(l:byte_info[1], l:byte_info[2]) | endif
 endfunction
 
 "------------------------------
@@ -505,13 +526,13 @@ command! -nargs=1 MemvwrRestyle call s:MemvwrOpen() | call MemvwrFromBlob(s:memv
 
 command! -nargs=1 -complete=file MemvwrFopen call s:MemvwrOpen() | call MemvwrFromFile(<q-args>, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
 
-" TODO: finish command, maybe add count, ranges, etc., and follow some naming convention
-command! -nargs=+ Bjump let binfo = s:MemvwrGetByteInfo(<f-args>) | echo binfo | if !empty(binfo) | call cursor(binfo[1], binfo[2]) | endif
+command! -nargs=1 ByteJump call s:MemvwrSetCursorToByte(<q-args>)
+command! -nargs=1 B        call s:MemvwrSetCursorToByte(<q-args>)
 
 augroup MemvwrAUG
   autocmd!
   autocmd FileType memvwr autocmd CursorMoved <buffer> call s:MemvwrUpdateCursorState() | call s:MemvwrCursorMatchByteAndASCII()
-  autocmd FileType memvwr nnoremap   <silent> <buffer> % :call <SID>MemvwrJumpCursorMatch()<CR>
+  autocmd FileType memvwr nnoremap   <silent> <buffer> % :call <SID>MemvwrSetCursorToMatch()<CR>
 augroup END
 
 "------------------------------
@@ -563,7 +584,7 @@ func! s:Mem(...)
     elseif l:arg[0] == 'a'
       let l:idx = 3
     endif
-    if l:idx >= 0 | let l:arg = slice(l:arg, 1) | endif
+    if l:idx >= 0 | let l:arg = l:arg[1:] | endif
 
     let x = str2nr(l:arg, 10)
 

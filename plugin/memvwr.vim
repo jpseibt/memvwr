@@ -49,7 +49,7 @@ let g:loaded_memvwr = 1
 "     windows, like :Eval command from termdebug. (look into `eval()`)
 " [ ] maybe an inspector field or window, if it is proven to not slow down cursor
 "     movements and highlight matches.(?)
-" [ ] command to print byte number under the cursor, could also use floating win.
+" [x] command to print byte number under the cursor, could also use floating win.
 " [x] command to jump cursor to N'th byte: from start byte, from byte under the
 "     cursor, N'th byte of current row, etc.
 " [ ] maybe add a decimal representation style for addresses (byte count).
@@ -70,7 +70,7 @@ let s:memvwr_fmt_width     = 2 "ff a8 8b " (width without separator ' ')
 " UI & Layout
 "
 " winbar is used to display the header on Neovim, but the statusline is used on Vim (so it's a footer -_-)
-let s:memvwr_addr_style       = 0
+let s:memvwr_addr_style       = 2
 let s:memvwr_addr_label_cache = 'MEMVWR     Address'
 let s:memvwr_header_str       = 'MEMVWR     Address   0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F            ASCII'
                                 "0x0000555555556004: 62 72 65 61 6b 00 63 61 73 65 00 63 68 61 72 00  break.case.char.
@@ -93,6 +93,13 @@ let s:memvwr_cursor_is_valid  = 0
 let s:memvwr_cursor_blob_idx  = -1
 let s:memvwr_cursor_match_col = -1
 let s:memvwr_cursor_match_len = -1
+
+"------------------------------
+" Pop-up Windows
+"
+let s:memvwr_popup_info_name  = '(MEMVWR -INFO-)'
+let s:memvwr_popup_info_bufnr = 0
+let s:memvwr_popup_info_winid = 0
 
 " Return a dictionary containing all state and config variables, similar
 " to `getwininfo()`, or return them individually.
@@ -146,6 +153,12 @@ function! MemvwrGetInfo(key='all')
       let l:result = s:memvwr_cursor_match_col
     elseif a:key == 'cursor_match_len'
       let l:result = s:memvwr_cursor_match_len
+    elseif a:key == 'popup_info_name'
+      let l:result = s:memvwr_popup_info_name
+    elseif a:key == 'popup_info_bufnr'
+      let l:result = s:memvwr_popup_info_bufnr
+    elseif a:key == 'popup_info_winid'
+      let l:result = s:memvwr_popup_info_winid
     else
       echomsg '[MemvwrGetInfo] Invalid key argument "' . a:key . '".'
     endif
@@ -174,6 +187,9 @@ function! MemvwrGetInfo(key='all')
           \ , 'cursor_blob_idx': s:memvwr_cursor_blob_idx
           \ , 'cursor_match_col': s:memvwr_cursor_match_col
           \ , 'cursor_match_len': s:memvwr_cursor_match_len
+          \ , 'popup_info_name': s:memvwr_popup_info_name
+          \ , 'popup_info_bufnr': s:memvwr_popup_info_bufnr
+          \ , 'popup_info_winid': s:memvwr_popup_info_winid
           \ }
   endif
 
@@ -512,6 +528,65 @@ function! s:MemvwrSetCursorToByte(cmd_str)
   if !empty(l:byte_info) | call cursor(l:byte_info[1], l:byte_info[2]) | endif
 endfunction
 
+
+"------------------------------
+" Pop-up windows
+" NOTE: testing to see if it is viable for
+"       things like an inspector toggle.
+" TODO: all...
+"
+
+" See `:help popup_create-arguments`
+function! s:MemvwrPopupOpenInfo()
+  if s:memvwr_popup_info_winid < 1
+    let s:memvwr_popup_info_bufnr = bufadd(s:memvwr_popup_info_name)
+
+    let l:info_str = ''
+    if s:memvwr_cursor_is_valid
+      let l:byte_under_cursor = s:memvwr_blob[s:memvwr_cursor_blob_idx]
+      let l:info_str .= printf("-Byte-\n\tidx: %12d\n\thex: %12X\n\toct: %12o\n\tdec: %12d\n\tbin: %12b\n",
+                             \ s:memvwr_cursor_blob_idx, l:byte_under_cursor, l:byte_under_cursor, l:byte_under_cursor, l:byte_under_cursor)
+      if l:byte_under_cursor >= 32 && l:byte_under_cursor <= 126
+        let l:info_str .= printf("\tascii: %10c\n", l:byte_under_cursor)
+      else
+        let l:info_str .= printf("\tascii: %s\n", '       N/P')
+      endif
+    endif
+    let l:info_str .= printf("-Layout-\n\tSTART: %10s\n\tBYTES: %10d\n\tBPR: %12d\n\tFMT: %12s\n\tADDR_STYLE: %5d",
+                           \ s:memvwr_start_addr, s:memvwr_blob_len, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
+
+    silent call deletebufline(s:memvwr_popup_info_bufnr, 1, '$')
+    call setbufline(s:memvwr_popup_info_bufnr, 1, split(l:info_str, "\n"))
+
+    let l:options = #{
+          \   line: 'cursor+1'
+          \ , col: 'cursor+1'
+          \ , pos: 'topleft'
+          \ , title: ' MEMVWR INFO '
+          \ , border: []
+          \ , moved: 'any'
+          \ , callback: 'MemvwrPopupCloseInfo'
+          \ }
+    let s:memvwr_popup_info_winid = popup_create(s:memvwr_popup_info_bufnr, l:options)
+
+    echomsg '[s:MemvwrPopupOpenInfo] New buffer [' . s:memvwr_popup_info_bufnr . '] assigned to ' . s:memvwr_popup_info_name
+  endif
+endfunction
+
+" Also used as the callback
+function! MemvwrPopupCloseInfo(id=0, result=-1)
+  if s:memvwr_popup_info_bufnr > 0
+    " Only call popup_close() if wasn't called via 'callback'
+    if a:id == 0
+      call popup_close(s:memvwr_popup_info_winid)
+    endif
+    let s:memvwr_popup_info_winid = 0
+    let s:memvwr_popup_info_bufnr = 0
+    echomsg '[s:MemvwrPopupCloseInfo] Closed buffer assigned to ' . s:memvwr_popup_info_name
+  endif
+endfunction
+
+
 "------------------------------
 " Commands and maps
 "
@@ -529,10 +604,13 @@ command! -nargs=1 -complete=file MemvwrFopen call s:MemvwrOpen() | call MemvwrFr
 command! -nargs=1 ByteJump call s:MemvwrSetCursorToByte(<q-args>)
 command! -nargs=1 B        call s:MemvwrSetCursorToByte(<q-args>)
 
+command! MemvwrPopinfo call s:MemvwrPopupOpenInfo()
+
 augroup MemvwrAUG
   autocmd!
   autocmd FileType memvwr autocmd CursorMoved <buffer> call s:MemvwrUpdateCursorState() | call s:MemvwrCursorMatchByteAndASCII()
   autocmd FileType memvwr nnoremap   <silent> <buffer> % :call <SID>MemvwrSetCursorToMatch()<CR>
+  autocmd FileType memvwr nnoremap   <silent> <buffer> I :MemvwrPopinfo<CR>
 augroup END
 
 "------------------------------
@@ -562,6 +640,9 @@ func! DebugMemvwr()
   echomsg printf("%-*s", 28, 's:memvwr_cursor_blob_idx:')  . s:memvwr_cursor_blob_idx
   echomsg printf("%-*s", 28, 's:memvwr_cursor_match_col:') . s:memvwr_cursor_match_col
   echomsg printf("%-*s", 28, 's:memvwr_cursor_match_len:') . s:memvwr_cursor_match_len
+  echomsg printf("%-*s", 28, 's:memvwr_popup_info_name:')  . s:memvwr_popup_info_name
+  echomsg printf("%-*s", 28, 's:memvwr_popup_info_bufnr:') . s:memvwr_popup_info_bufnr
+  echomsg printf("%-*s", 28, 's:memvwr_popup_info_winid:') . s:memvwr_popup_info_winid
   echomsg '----------------'
 endfunc
 

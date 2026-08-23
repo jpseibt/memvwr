@@ -536,38 +536,90 @@ endfunction
 " TODO: all...
 "
 
+" Relevant highlight groups:
+" Vim:
+"      hi Pmenu
+"      hi PmenuSel
+" Nvim: (see `:help nvim_open_win()` > Parameters)
+"      hi NormalFloat
+"      hi FloatBorder
+"      hi FloatTitle
+
 " See `:help popup_create-arguments`
 function! s:MemvwrPopupOpenInfo()
   if s:memvwr_popup_info_winid < 1
     let s:memvwr_popup_info_bufnr = bufadd(s:memvwr_popup_info_name)
+    call bufload(s:memvwr_popup_info_bufnr)
+    call setbufvar(s:memvwr_popup_info_bufnr, '&buftype', 'nofile')
+    call setbufvar(s:memvwr_popup_info_bufnr, '&bufhidden', 'hide')
+    call setbufvar(s:memvwr_popup_info_bufnr, '&swapfile', 0)
+    call setbufvar(s:memvwr_popup_info_bufnr, '&undolevels', -1)
 
-    let l:info_str = ''
+    " See `:help list` and `:help extend()`
+    let l:info_lines = []
+
     if s:memvwr_cursor_is_valid
-      let l:byte_under_cursor = s:memvwr_blob[s:memvwr_cursor_blob_idx]
-      let l:info_str .= printf("-Byte-\n\tidx: %12d\n\thex: %12X\n\toct: %12o\n\tdec: %12d\n\tbin: %12b\n",
-                             \ s:memvwr_cursor_blob_idx, l:byte_under_cursor, l:byte_under_cursor, l:byte_under_cursor, l:byte_under_cursor)
-      if l:byte_under_cursor >= 32 && l:byte_under_cursor <= 126
-        let l:info_str .= printf("\tascii: %10c\n", l:byte_under_cursor)
-      else
-        let l:info_str .= printf("\tascii: %s\n", '       N/P')
-      endif
+      let l:byte = s:memvwr_blob[s:memvwr_cursor_blob_idx]
+      let l:ascii_char  = '       '
+      let l:ascii_char .= (l:byte >= 32 && l:byte <= 126) ? printf("'%c'", l:byte) : 'N/P'
+
+      call extend(l:info_lines, [
+             \   '-Byte-'
+             \ , printf("    idx: %12d", s:memvwr_cursor_blob_idx)
+             \ , printf("    hex: %12X", l:byte)
+             \ , printf("    oct: %12o", l:byte)
+             \ , printf("    dec: %12d", l:byte)
+             \ , printf("    bin: %12b", l:byte)
+             \ , "    ascii: " . l:ascii_char
+             \ ])
     endif
-    let l:info_str .= printf("-Layout-\n\tSTART: %10s\n\tBYTES: %10d\n\tBPR: %12d\n\tFMT: %12s\n\tADDR_STYLE: %5d",
-                           \ s:memvwr_start_addr, s:memvwr_blob_len, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
+
+    call extend(l:info_lines, [
+           \   '-Layout-'
+           \ , printf("    START: %10s", s:memvwr_start_addr)
+           \ , printf("    BYTES: %10d", s:memvwr_blob_len)
+           \ , printf("    BPR: %12d", s:memvwr_bytes_per_row)
+           \ , printf("    FMT: %12s", s:memvwr_fmt)
+           \ , printf("    ADDR_STYLE: %5d", s:memvwr_addr_style)
+           \ ])
 
     silent call deletebufline(s:memvwr_popup_info_bufnr, 1, '$')
-    call setbufline(s:memvwr_popup_info_bufnr, 1, split(l:info_str, "\n"))
+    call setbufline(s:memvwr_popup_info_bufnr, 1, l:info_lines)
 
-    let l:options = #{
-          \   line: 'cursor+1'
-          \ , col: 'cursor+1'
-          \ , pos: 'topleft'
-          \ , title: ' MEMVWR INFO '
-          \ , border: []
-          \ , moved: 'any'
-          \ , callback: 'MemvwrPopupCloseInfo'
-          \ }
-    let s:memvwr_popup_info_winid = popup_create(s:memvwr_popup_info_bufnr, l:options)
+    if has('nvim')
+      let l:win_width  = 22
+      let l:win_height = len(l:info_lines) 
+      let l:options = #{
+            \   relative: 'cursor'
+            \ , row: 1
+            \ , col: 1
+            \ , width: l:win_width
+            \ , height: l:win_height
+            \ , anchor: 'NW'
+            \ , title: ' MEMVWR INFO '
+            \ , border: [ "╔", "═" ,"╗", "║", "╝", "═", "╚", "║" ]
+            \ , style: 'minimal'
+            \ }
+      let s:memvwr_popup_info_winid = nvim_open_win(s:memvwr_popup_info_bufnr, 0, l:options)
+
+      " Hack something similar to Vim's `moved: 'any'` (see `:help autocmd-define`)
+      augroup MemvwrNvimPopupMovedAny
+        autocmd!
+        autocmd CursorMoved,InsertEnter,WinLeave <buffer> ++once call MemvwrPopupCloseInfo()
+      augroup END
+    else
+      let l:options = #{
+            \   line: 'cursor+1'
+            \ , col: 'cursor+1'
+            \ , pos: 'topleft'
+            \ , title: ' MEMVWR INFO '
+            \ , padding: [0, 1, 0, 1]
+            \ , border: []
+            \ , moved: 'any'
+            \ , callback: 'MemvwrPopupCloseInfo'
+            \ }
+      let s:memvwr_popup_info_winid = popup_create(s:memvwr_popup_info_bufnr, l:options)
+    endif
 
     echomsg '[s:MemvwrPopupOpenInfo] New buffer [' . s:memvwr_popup_info_bufnr . '] assigned to ' . s:memvwr_popup_info_name
   endif
@@ -578,11 +630,18 @@ function! MemvwrPopupCloseInfo(id=0, result=-1)
   if s:memvwr_popup_info_bufnr > 0
     " Only call popup_close() if wasn't called via 'callback'
     if a:id == 0
-      call popup_close(s:memvwr_popup_info_winid)
+      if has('nvim')
+        call nvim_win_close(s:memvwr_popup_info_winid, 1)
+        silent! autocmd! MemvwrNvimPopupMovedAny
+      else
+        call popup_close(s:memvwr_popup_info_winid)
+      endif
     endif
+
+    execute 'silent! bw! ' . s:memvwr_popup_info_bufnr
     let s:memvwr_popup_info_winid = 0
     let s:memvwr_popup_info_bufnr = 0
-    echomsg '[s:MemvwrPopupCloseInfo] Closed buffer assigned to ' . s:memvwr_popup_info_name
+    echomsg '[MemvwrPopupCloseInfo] Closed buffer assigned to ' . s:memvwr_popup_info_name
   endif
 endfunction
 

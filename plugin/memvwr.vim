@@ -45,16 +45,16 @@ let g:loaded_memvwr = 1
 " [ ] save to file.
 " [ ] poke memory of debuggee (termdebug).
 " [ ] add more information about analysed dump: expression, timestamp, ... (termdebug).
-" [ ] inspector for byte combinations (uint32_t, double, etc.), maybe with floating
+" [o] inspector for byte combinations (uint32_t, double, etc.), maybe with floating
 "     windows, like :Eval command from termdebug. (look into `eval()`)
-" [ ] maybe an inspector field or window, if it is proven to not slow down cursor
+" [o] maybe an inspector field or window, if it is proven to not slow down cursor
 "     movements and highlight matches.(?)
 " [x] command to print byte number under the cursor, could also use floating win.
 " [x] command to jump cursor to N'th byte: from start byte, from byte under the
 "     cursor, N'th byte of current row, etc.
 " [ ] maybe add a decimal representation style for addresses (byte count).
 " [ ] visual mode could match-highlight the bytes selected.
-" [ ] select endianness.
+" [x] select endianness.
 
 let s:memvwr_name          = '(MEMVWR)'
 let s:memvwr_bufnr         = 0
@@ -97,9 +97,16 @@ let s:memvwr_cursor_match_len = -1
 "------------------------------
 " Pop-up Windows
 "
+let s:memvwr_is_little_endian = 1
+let s:memvwr_endianness_label = ['Big-Endian', 'Little-Endian']
+
 let s:memvwr_popup_info_name  = '(MEMVWR -INFO-)'
 let s:memvwr_popup_info_bufnr = 0
 let s:memvwr_popup_info_winid = 0
+
+let s:memvwr_popup_inspector_name  = '(MEMVWR -INSPECTOR-)'
+let s:memvwr_popup_inspector_bufnr = 0
+let s:memvwr_popup_inspector_winid = 0
 
 " Return a dictionary containing all state and config variables, similar
 " to `getwininfo()`, or return them individually.
@@ -153,12 +160,20 @@ function! MemvwrGetInfo(key='all')
       let l:result = s:memvwr_cursor_match_col
     elseif a:key == 'cursor_match_len'
       let l:result = s:memvwr_cursor_match_len
+    elseif a:key == 'is_little_endian'
+      let l:result s:memvwr_is_little_endian
     elseif a:key == 'popup_info_name'
       let l:result = s:memvwr_popup_info_name
     elseif a:key == 'popup_info_bufnr'
       let l:result = s:memvwr_popup_info_bufnr
     elseif a:key == 'popup_info_winid'
       let l:result = s:memvwr_popup_info_winid
+    elseif a:key == 'popup_inspector_name'
+      let l:result s:memvwr_popup_inspector_name
+    elseif a:key == 'popup_inspector_bufnr'
+      let l:result s:memvwr_popup_inspector_bufnr
+    elseif a:key == 'popup_inspector_winid'
+      let l:result s:memvwr_popup_inspector_winid
     else
       echomsg '[MemvwrGetInfo] Invalid key argument "' . a:key . '".'
     endif
@@ -187,9 +202,16 @@ function! MemvwrGetInfo(key='all')
           \ , 'cursor_blob_idx': s:memvwr_cursor_blob_idx
           \ , 'cursor_match_col': s:memvwr_cursor_match_col
           \ , 'cursor_match_len': s:memvwr_cursor_match_len
+          \ , 'is_little_endian': s:memvwr_is_little_endian
           \ , 'popup_info_name': s:memvwr_popup_info_name
           \ , 'popup_info_bufnr': s:memvwr_popup_info_bufnr
           \ , 'popup_info_winid': s:memvwr_popup_info_winid
+          \ , 'popup_inspector_name': s:memvwr_popup_inspector_name
+          \ , 'popup_inspector_bufnr': s:memvwr_popup_inspector_bufnr
+          \ , 'popup_inspector_winid': s:memvwr_popup_inspector_winid
+          \ }
+  endif
+
           \ }
   endif
 
@@ -531,9 +553,9 @@ endfunction
 
 "------------------------------
 " Pop-up windows
-" NOTE: testing to see if it is viable for
-"       things like an inspector toggle.
-" TODO: all...
+" TODO: inspector types: float, double, 64-bit integers
+" TODO: be smarter about popup position when there's no
+"       room for it on the window
 "
 
 " Relevant highlight groups:
@@ -547,82 +569,87 @@ endfunction
 
 " See `:help popup_create-arguments`
 function! s:MemvwrPopupOpenInfo()
-  if s:memvwr_popup_info_winid < 1
-    let s:memvwr_popup_info_bufnr = bufadd(s:memvwr_popup_info_name)
-    call bufload(s:memvwr_popup_info_bufnr)
-    call setbufvar(s:memvwr_popup_info_bufnr, '&buftype', 'nofile')
-    call setbufvar(s:memvwr_popup_info_bufnr, '&bufhidden', 'hide')
-    call setbufvar(s:memvwr_popup_info_bufnr, '&swapfile', 0)
-    call setbufvar(s:memvwr_popup_info_bufnr, '&undolevels', -1)
+  if s:memvwr_popup_info_winid > 0
+    echomsg '[s:MemvwrPopupOpenInfo] A buffer [' . s:memvwr_popup_info_bufnr . '] assigned to ' . s:memvwr_popup_info_name . ' already exists'
+    return
+  endif
 
-    " See `:help list` and `:help extend()`
-    let l:info_lines = []
+  let s:memvwr_popup_info_bufnr = bufadd(s:memvwr_popup_info_name)
+  call bufload(s:memvwr_popup_info_bufnr)
+  call setbufvar(s:memvwr_popup_info_bufnr, '&buftype', 'nofile')
+  call setbufvar(s:memvwr_popup_info_bufnr, '&bufhidden', 'hide')
+  call setbufvar(s:memvwr_popup_info_bufnr, '&swapfile', 0)
+  call setbufvar(s:memvwr_popup_info_bufnr, '&undolevels', -1)
 
-    if s:memvwr_cursor_is_valid
-      let l:byte = s:memvwr_blob[s:memvwr_cursor_blob_idx]
-      let l:ascii_char  = '       '
-      let l:ascii_char .= (l:byte >= 32 && l:byte <= 126) ? printf("'%c'", l:byte) : 'N/P'
+  " See `:help list` and `:help extend()`
+  let l:info_lines = []
 
-      call extend(l:info_lines, [
-             \   '-Byte-'
-             \ , printf("    idx: %12d", s:memvwr_cursor_blob_idx)
-             \ , printf("    hex: %12X", l:byte)
-             \ , printf("    oct: %12o", l:byte)
-             \ , printf("    dec: %12d", l:byte)
-             \ , printf("    bin: %12b", l:byte)
-             \ , "    ascii: " . l:ascii_char
-             \ ])
-    endif
+  if s:memvwr_cursor_is_valid
+    let l:byte = s:memvwr_blob[s:memvwr_cursor_blob_idx]
+    let l:ascii_char  = '       '
+    let l:ascii_char .= (l:byte >= 32 && l:byte <= 126) ? printf("'%c'", l:byte) : 'N/P'
 
     call extend(l:info_lines, [
-           \   '-Layout-'
-           \ , printf("    START: %10s", s:memvwr_start_addr)
-           \ , printf("    BYTES: %10d", s:memvwr_blob_len)
-           \ , printf("    BPR: %12d", s:memvwr_bytes_per_row)
-           \ , printf("    FMT: %12s", s:memvwr_fmt)
-           \ , printf("    ADDR_STYLE: %5d", s:memvwr_addr_style)
+           \   '-Byte-'
+           \ , printf("    idx: %12d", s:memvwr_cursor_blob_idx)
+           \ , printf("    hex: %12X", l:byte)
+           \ , printf("    oct: %12o", l:byte)
+           \ , printf("    dec: %12d", l:byte)
+           \ , printf("    bin: %12b", l:byte)
+           \ , "    ascii: " . l:ascii_char
            \ ])
-
-    silent call deletebufline(s:memvwr_popup_info_bufnr, 1, '$')
-    call setbufline(s:memvwr_popup_info_bufnr, 1, l:info_lines)
-
-    if has('nvim')
-      let l:win_width  = 22
-      let l:win_height = len(l:info_lines) 
-      let l:options = #{
-            \   relative: 'cursor'
-            \ , row: 1
-            \ , col: 1
-            \ , width: l:win_width
-            \ , height: l:win_height
-            \ , anchor: 'NW'
-            \ , title: ' MEMVWR INFO '
-            \ , border: [ "╔", "═" ,"╗", "║", "╝", "═", "╚", "║" ]
-            \ , style: 'minimal'
-            \ }
-      let s:memvwr_popup_info_winid = nvim_open_win(s:memvwr_popup_info_bufnr, 0, l:options)
-
-      " Hack something similar to Vim's `moved: 'any'` (see `:help autocmd-define`)
-      augroup MemvwrNvimPopupMovedAny
-        autocmd!
-        autocmd CursorMoved,InsertEnter,WinLeave <buffer> ++once call MemvwrPopupCloseInfo()
-      augroup END
-    else
-      let l:options = #{
-            \   line: 'cursor+1'
-            \ , col: 'cursor+1'
-            \ , pos: 'topleft'
-            \ , title: ' MEMVWR INFO '
-            \ , padding: [0, 1, 0, 1]
-            \ , border: []
-            \ , moved: 'any'
-            \ , callback: 'MemvwrPopupCloseInfo'
-            \ }
-      let s:memvwr_popup_info_winid = popup_create(s:memvwr_popup_info_bufnr, l:options)
-    endif
-
-    echomsg '[s:MemvwrPopupOpenInfo] New buffer [' . s:memvwr_popup_info_bufnr . '] assigned to ' . s:memvwr_popup_info_name
   endif
+
+  call extend(l:info_lines, [
+         \   '-Layout-'
+         \ , printf("    START: %10s", s:memvwr_start_addr)
+         \ , printf("    BYTES: %10d", s:memvwr_blob_len)
+         \ , printf("    BPR: %12d", s:memvwr_bytes_per_row)
+         \ , printf("    FMT: %12s", s:memvwr_fmt)
+         \ , printf("    ADDR_STYLE: %5d", s:memvwr_addr_style)
+         \ ])
+
+  silent call deletebufline(s:memvwr_popup_info_bufnr, 1, '$')
+  call setbufline(s:memvwr_popup_info_bufnr, 1, l:info_lines)
+
+  let l:popup_title = printf("[%d]%s", s:memvwr_popup_info_bufnr, s:memvwr_popup_info_name)
+
+  if has('nvim')
+    let l:win_width  = 22
+    let l:win_height = len(l:info_lines) 
+    let l:options = #{
+          \   relative: 'cursor'
+          \ , row: 1
+          \ , col: 1
+          \ , width: l:win_width
+          \ , height: l:win_height
+          \ , anchor: 'NW'
+          \ , title: l:popup_title
+          \ , border: [ "╔", "═" ,"╗", "║", "╝", "═", "╚", "║" ]
+          \ , style: 'minimal'
+          \ }
+    let s:memvwr_popup_info_winid = nvim_open_win(s:memvwr_popup_info_bufnr, 0, l:options)
+
+    " Hack something similar to Vim's `moved: 'any'` (see `:help autocmd-define`)
+    augroup MemvwrNvimPopupMovedAny
+      autocmd!
+      autocmd CursorMoved,InsertEnter,WinLeave <buffer> ++once call MemvwrPopupCloseInfo()
+    augroup END
+  else
+    let l:options = #{
+          \   line: 'cursor+1'
+          \ , col: 'cursor+1'
+          \ , pos: 'topleft'
+          \ , title: l:popup_title
+          \ , padding: [0, 1, 0, 1]
+          \ , border: []
+          \ , moved: 'any'
+          \ , callback: 'MemvwrPopupCloseInfo'
+          \ }
+    let s:memvwr_popup_info_winid = popup_create(s:memvwr_popup_info_bufnr, l:options)
+  endif
+
+  echomsg '[s:MemvwrPopupOpenInfo] New buffer [' . s:memvwr_popup_info_bufnr . '] assigned to ' . s:memvwr_popup_info_name
 endfunction
 
 " Also used as the callback
@@ -645,6 +672,94 @@ function! MemvwrPopupCloseInfo(id=0, result=-1)
   endif
 endfunction
 
+function! s:MemvwrPopupInspectorToggle()
+  if s:memvwr_popup_inspector_bufnr > 0
+    if has('nvim')
+      call nvim_win_close(s:memvwr_popup_inspector_winid, 1)
+    else
+      call popup_close(s:memvwr_popup_inspector_winid)
+    endif
+
+    silent! autocmd! MemvwrPopupInspectorAutoClose
+    execute 'silent! bw! ' . s:memvwr_popup_inspector_bufnr
+    let s:memvwr_popup_inspector_winid = 0
+    let s:memvwr_popup_inspector_bufnr = 0
+    echomsg '[s:MemvwrPopupInspectorToggle] Closed buffer assigned to ' . s:memvwr_popup_inspector_name
+
+  else
+    let s:memvwr_popup_inspector_bufnr = bufadd(s:memvwr_popup_inspector_name)
+    call bufload(s:memvwr_popup_inspector_bufnr)
+    call setbufvar(s:memvwr_popup_inspector_bufnr, '&buftype', 'nofile')
+    call setbufvar(s:memvwr_popup_inspector_bufnr, '&bufhidden', 'hide')
+    call setbufvar(s:memvwr_popup_inspector_bufnr, '&swapfile', 0)
+    call setbufvar(s:memvwr_popup_inspector_bufnr, '&undolevels', -1)
+
+    let l:popup_title = printf("[%d]%s", s:memvwr_popup_inspector_bufnr, s:memvwr_popup_inspector_name)
+
+    if has('nvim')
+      let l:win_width  = 34
+      let l:win_height = 8
+      let l:options = #{
+            \   relative: 'cursor'
+            \ , row: 1
+            \ , col: 1
+            \ , width: l:win_width
+            \ , height: l:win_height
+            \ , anchor: 'NW'
+            \ , title: l:popup_title
+            \ , border: [ "╔", "═" ,"╗", "║", "╝", "═", "╚", "║" ]
+            \ , style: 'minimal'
+            \ }
+      let s:memvwr_popup_inspector_winid = nvim_open_win(s:memvwr_popup_inspector_bufnr, 0, l:options)
+    else
+      let l:options = #{
+            \   line: 'cursor+1'
+            \ , col: 'cursor+1'
+            \ , pos: 'topleft'
+            \ , title: l:popup_title
+            \ , padding: [0, 1, 0, 1]
+            \ , border: []
+            \ }
+      let s:memvwr_popup_inspector_winid = popup_create(s:memvwr_popup_inspector_bufnr, l:options)
+    endif
+
+    augroup MemvwrPopupInspectorAutoClose
+      autocmd!
+      autocmd InsertEnter,WinClosed <buffer> ++once call s:MemvwrPopupInspectorToggle()
+    augroup END
+
+    echomsg '[s:MemvwrPopupInspectorToggle] New buffer [' . s:memvwr_popup_inspector_bufnr . '] assigned to ' . s:memvwr_popup_inspector_name
+    call s:MemvwrPopupInspectorUpdate()
+  endif
+endfunction
+
+function! s:MemvwrPopupInspectorUpdate()
+  if s:memvwr_popup_inspector_bufnr > 0 && win_getid() == s:memvwr_winid
+    if has('nvim')
+      call nvim_win_set_config(s:memvwr_popup_inspector_winid, #{relative: 'cursor', row: 2, col: s:memvwr_fmt_width})
+    else
+      call popup_move(s:memvwr_popup_inspector_winid, #{line: 'cursor+2', col: 'cursor+'.s:memvwr_fmt_width})
+    endif
+
+    if s:memvwr_cursor_is_valid
+      " TODO: consider doing this only when CursorHold (see `:help CursorHold`)
+      let l:inspector_lines = []
+
+      call extend(l:inspector_lines, [
+             \   s:memvwr_endianness_label[s:memvwr_is_little_endian] . ' [S: swap endianness]'
+             \ , printf("-> 0x%x", s:memvwr_start_addr + s:memvwr_cursor_blob_idx)
+             \ , printf(" uint8:  %d", s:InspectUint8(s:memvwr_cursor_blob_idx))
+             \ , printf(" int8:   %d", s:InspectInt8(s:memvwr_cursor_blob_idx))
+             \ , printf(" uint16: %d", s:InspectUint16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf(" int16:  %d", s:InspectInt16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf(" uint32: %d", s:InspectUint32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf(" int32:  %d", s:InspectInt32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ ])
+      call setbufline(s:memvwr_popup_inspector_bufnr, 1, l:inspector_lines)
+    endif
+  endif
+endfunction
+
 
 "------------------------------
 " Commands and maps
@@ -663,45 +778,176 @@ command! -nargs=1 -complete=file MemvwrFopen call s:MemvwrOpen() | call MemvwrFr
 command! -nargs=1 ByteJump call s:MemvwrSetCursorToByte(<q-args>)
 command! -nargs=1 B        call s:MemvwrSetCursorToByte(<q-args>)
 
-command! MemvwrPopinfo call s:MemvwrPopupOpenInfo()
+command! MemvwrPopinfo            call s:MemvwrPopupOpenInfo()
+command! MemvwrPopinspectorToggle call s:MemvwrPopupInspectorToggle()
+command! MemvwrSwapEndianness     let s:memvwr_is_little_endian = (s:memvwr_is_little_endian) ? 0 : 1 | call s:MemvwrPopupInspectorUpdate()
 
 augroup MemvwrAUG
   autocmd!
-  autocmd FileType memvwr autocmd CursorMoved <buffer> call s:MemvwrUpdateCursorState() | call s:MemvwrCursorMatchByteAndASCII()
+  autocmd FileType memvwr autocmd CursorMoved <buffer> call s:MemvwrUpdateCursorState() | call s:MemvwrCursorMatchByteAndASCII() | call s:MemvwrPopupInspectorUpdate()
   autocmd FileType memvwr nnoremap   <silent> <buffer> % :call <SID>MemvwrSetCursorToMatch()<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> I :MemvwrPopinfo<CR>
+  autocmd FileType memvwr nnoremap   <silent> <buffer> i :MemvwrPopinspectorToggle<CR>
+  autocmd FileType memvwr nnoremap   <silent> <buffer> S :MemvwrSwapEndianness<CR>
 augroup END
+
+
+"------------------------------
+" Utils
+"
+" NOTE: Inspect...() functions assume the idx argument will not be less than 0
+function! s:InspectUint8(idx)
+  if a:idx + 1 > s:memvwr_blob_len | return -1 | endif
+
+  return s:memvwr_blob[a:idx]
+endfunction
+
+function! s:InspectUint16(idx, little_endian)
+  if a:idx + 2 > s:memvwr_blob_len | return -1 | endif
+
+  let l:result = 0
+  let l:byte0  = s:memvwr_blob[a:idx]
+  let l:byte1  = s:memvwr_blob[a:idx + 1]
+
+  if a:little_endian
+    let l:result = l:byte0
+    let l:result = or(l:result, s:ShiftLeft(l:byte1, 8))
+  else
+    let l:result = s:ShiftLeft(l:byte0, 8)
+    let l:result = or(l:result, l:byte1)
+  endif
+
+  return l:result
+endfunction
+
+function! s:InspectUint32(idx, little_endian)
+  if a:idx + 4 > s:memvwr_blob_len | return -1 | endif
+
+  let l:result = 0
+  let l:byte0  = s:memvwr_blob[a:idx]
+  let l:byte1  = s:memvwr_blob[a:idx + 1]
+  let l:byte2  = s:memvwr_blob[a:idx + 2]
+  let l:byte3  = s:memvwr_blob[a:idx + 3]
+
+  if a:little_endian
+    let l:result = l:byte0
+    let l:result = or(l:result, s:ShiftLeft(l:byte1, 8))
+    let l:result = or(l:result, s:ShiftLeft(l:byte2, 16))
+    let l:result = or(l:result, s:ShiftLeft(l:byte3, 24))
+  else
+    let l:result = s:ShiftLeft(l:byte0, 24)
+    let l:result = or(l:result, s:ShiftLeft(l:byte1, 16))
+    let l:result = or(l:result, s:ShiftLeft(l:byte2, 8))
+    let l:result = or(l:result, l:byte3)
+  endif
+
+  return l:result
+endfunction
+
+"------------------------------
+" NOTE: see Hacker's Delight:
+" -> Chapter 2-6 Sign Extension
+"
+function! s:InspectInt8(idx)
+  let l:result = s:InspectUint8(a:idx)
+  if l:result == -1 | return -1 | endif
+
+  return xor(l:result, 0x80) - 0x80
+endfunction
+
+function! s:InspectInt16(idx, little_endian)
+  let l:result = s:InspectUint16(a:idx, a:little_endian)
+  if l:result == -1 | return -1 | endif
+
+  return xor(l:result, 0x8000) - 0x8000
+endfunction
+
+function! s:InspectInt32(idx, little_endian)
+  let l:result = s:InspectUint32(a:idx, a:little_endian)
+  if l:result == -1 | return -1 | endif
+
+  return xor(l:result, 0x80000000) - 0x80000000
+endfunction
+
+function! s:ShiftLeft(lhs, rhs)
+  " NOTE: can't use bit shifts on Neovim. Using 256 multiplier instead.
+  if has('nvim')
+    let l:result    = a:lhs
+    let l:shift_amt = a:rhs
+
+    while l:shift_amt >= 8
+      let l:result    *= 256
+      let l:shift_amt -= 8
+    endwhile
+
+    while l:shift_amt > 0
+      let l:result    *= 2
+      let l:shift_amt -= 1
+    endwhile
+
+    return l:result
+  else
+    return a:lhs << a:rhs
+  endif
+endfunction
+
+function! s:ShiftRight(lhs, rhs)
+  " NOTE: can't use bit shifts on Neovim. Using 256 multiplier instead.
+  if has('nvim')
+    let l:result    = a:lhs
+    let l:shift_amt = a:rhs
+
+    while l:shift_amt >= 8
+      let l:result    /= 256
+      let l:shift_amt -= 8
+    endwhile
+
+    while l:shift_amt > 0
+      let l:result    /= 2
+      let l:shift_amt -= 1
+    endwhile
+
+    return l:result
+  else
+    return a:lhs >> a:rhs
+  endif
+endfunction
+
 
 "------------------------------
 " Temp / Debug - remove later
 "
 func! DebugMemvwr()
   echomsg '----------------'
-  echomsg printf("%-*s", 28, 's:memvwr_name:')             . s:memvwr_name
-  echomsg printf("%-*s", 28, 's:memvwr_bufnr:')            . s:memvwr_bufnr
-  echomsg printf("%-*s", 28, 's:memvwr_winid:')            . s:memvwr_winid
-  echomsg printf("%-*s", 28, 's:memvwr_blob:')             . string(s:memvwr_blob)
-  echomsg printf("%-*s", 28, 's:memvwr_blob_len:')         . s:memvwr_blob_len
-  echomsg printf("%-*s", 28, 's:memvwr_start_addr:')       . s:memvwr_start_addr
-  echomsg printf("%-*s", 28, 's:memvwr_bytes_per_row:')    . s:memvwr_bytes_per_row
-  echomsg printf("%-*s", 28, 's:memvwr_fmt:')              . s:memvwr_fmt
-  echomsg printf("%-*s", 28, 's:memvwr_fmt_width:')        . s:memvwr_fmt_width
-  echomsg printf("%-*s", 28, 's:memvwr_addr_style:')       . s:memvwr_addr_style
-  echomsg printf("%-*s", 28, 's:memvwr_header_str:')       . s:memvwr_header_str
-  echomsg printf("%-*s", 28, 's:memvwr_addr_label_cache:') . s:memvwr_addr_label_cache
-  echomsg printf("%-*s", 28, 's:memvwr_column_bytes:')     . s:memvwr_column_bytes
-  echomsg printf("%-*s", 28, 's:memvwr_column_ascii:')     . s:memvwr_column_ascii
-  echomsg printf("%-*s", 28, 's:memvwr_format_str_addr:')  . s:memvwr_format_str_addr
-  echomsg printf("%-*s", 28, 's:memvwr_format_str_bytes:') . s:memvwr_format_str_bytes
-  echomsg printf("%-*s", 28, 's:memvwr_cursor_line:')      . s:memvwr_cursor_line
-  echomsg printf("%-*s", 28, 's:memvwr_cursor_col:')       . s:memvwr_cursor_col
-  echomsg printf("%-*s", 28, 's:memvwr_cursor_is_valid:')  . s:memvwr_cursor_is_valid
-  echomsg printf("%-*s", 28, 's:memvwr_cursor_blob_idx:')  . s:memvwr_cursor_blob_idx
-  echomsg printf("%-*s", 28, 's:memvwr_cursor_match_col:') . s:memvwr_cursor_match_col
-  echomsg printf("%-*s", 28, 's:memvwr_cursor_match_len:') . s:memvwr_cursor_match_len
-  echomsg printf("%-*s", 28, 's:memvwr_popup_info_name:')  . s:memvwr_popup_info_name
-  echomsg printf("%-*s", 28, 's:memvwr_popup_info_bufnr:') . s:memvwr_popup_info_bufnr
-  echomsg printf("%-*s", 28, 's:memvwr_popup_info_winid:') . s:memvwr_popup_info_winid
+  echomsg printf("%-*s", 28, 's:memvwr_name:')                  . s:memvwr_name
+  echomsg printf("%-*s", 28, 's:memvwr_bufnr:')                 . s:memvwr_bufnr
+  echomsg printf("%-*s", 28, 's:memvwr_winid:')                 . s:memvwr_winid
+  echomsg printf("%-*s", 28, 's:memvwr_blob:')                  . string(s:memvwr_blob)
+  echomsg printf("%-*s", 28, 's:memvwr_blob_len:')              . s:memvwr_blob_len
+  echomsg printf("%-*s", 28, 's:memvwr_start_addr:')            . s:memvwr_start_addr
+  echomsg printf("%-*s", 28, 's:memvwr_bytes_per_row:')         . s:memvwr_bytes_per_row
+  echomsg printf("%-*s", 28, 's:memvwr_fmt:')                   . s:memvwr_fmt
+  echomsg printf("%-*s", 28, 's:memvwr_fmt_width:')             . s:memvwr_fmt_width
+  echomsg printf("%-*s", 28, 's:memvwr_addr_style:')            . s:memvwr_addr_style
+  echomsg printf("%-*s", 28, 's:memvwr_header_str:')            . s:memvwr_header_str
+  echomsg printf("%-*s", 28, 's:memvwr_addr_label_cache:')      . s:memvwr_addr_label_cache
+  echomsg printf("%-*s", 28, 's:memvwr_column_bytes:')          . s:memvwr_column_bytes
+  echomsg printf("%-*s", 28, 's:memvwr_column_ascii:')          . s:memvwr_column_ascii
+  echomsg printf("%-*s", 28, 's:memvwr_format_str_addr:')       . s:memvwr_format_str_addr
+  echomsg printf("%-*s", 28, 's:memvwr_format_str_bytes:')      . s:memvwr_format_str_bytes
+  echomsg printf("%-*s", 28, 's:memvwr_cursor_line:')           . s:memvwr_cursor_line
+  echomsg printf("%-*s", 28, 's:memvwr_cursor_col:')            . s:memvwr_cursor_col
+  echomsg printf("%-*s", 28, 's:memvwr_cursor_is_valid:')       . s:memvwr_cursor_is_valid
+  echomsg printf("%-*s", 28, 's:memvwr_cursor_blob_idx:')       . s:memvwr_cursor_blob_idx
+  echomsg printf("%-*s", 28, 's:memvwr_cursor_match_col:')      . s:memvwr_cursor_match_col
+  echomsg printf("%-*s", 28, 's:memvwr_cursor_match_len:')      . s:memvwr_cursor_match_len
+  echomsg printf("%-*s", 28, 's:memvwr_is_little_endian:')      . s:memvwr_is_little_endian
+  echomsg printf("%-*s", 28, 's:memvwr_popup_info_name:')       . s:memvwr_popup_info_name
+  echomsg printf("%-*s", 28, 's:memvwr_popup_info_bufnr:')      . s:memvwr_popup_info_bufnr
+  echomsg printf("%-*s", 28, 's:memvwr_popup_info_winid:')      . s:memvwr_popup_info_winid
+  echomsg printf("%-*s", 28, 's:memvwr_popup_inspector_name:')  . s:memvwr_popup_inspector_name
+  echomsg printf("%-*s", 28, 's:memvwr_popup_inspector_bufnr:') . s:memvwr_popup_inspector_bufnr
+  echomsg printf("%-*s", 28, 's:memvwr_popup_inspector_winid:') . s:memvwr_popup_inspector_winid
   echomsg '----------------'
 endfunc
 

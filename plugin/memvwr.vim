@@ -18,12 +18,10 @@ let g:loaded_memvwr = 1
 " Memory Viewer (Memvwr)
 "============================================================
 " TODO notes:
-" [ ] consider changing namespace style variables (s:memvwr_bufnr) for
-"  ^  a s:memvwr dict, maybe one for "private" state and other for config.
-" NOTE: probably would lead to unnecessary overhead when accessing
-"       state variables, needing to run the dict hashing constantly.
 " [x] strip leading zeros or prefix from addresses (option).
 " [ ] width change (option: grouping bytes).
+"  ^- NOTE: maybe should keep things simple and focus on having all aspects
+"           of individual bytes representation and operations predictable.
 " [ ] make reformat commands/function smarter, without redoing all the work
 "     or generating all the fields again, based on the option. Like changing
 "     the address style by editing the buffer lines, but only acting on the
@@ -95,10 +93,14 @@ let s:memvwr_cursor_match_col = -1
 let s:memvwr_cursor_match_len = -1
 
 "------------------------------
-" Pop-up Windows
+" Data visualization & Pop-up Windows
 "
 let s:memvwr_is_little_endian = 1
 let s:memvwr_endianness_label = ['Big-Endian', 'Little-Endian']
+
+let s:memvwr_win_info_name  = '(MEMVWR -INFO WINDOW-)'
+let s:memvwr_win_info_bufnr = 0
+let s:memvwr_win_info_winid = 0
 
 let s:memvwr_popup_info_name  = '(MEMVWR -INFO-)'
 let s:memvwr_popup_info_bufnr = 0
@@ -162,6 +164,12 @@ function! MemvwrGetInfo(key='all')
       let l:result = s:memvwr_cursor_match_len
     elseif a:key == 'is_little_endian'
       let l:result s:memvwr_is_little_endian
+    elseif a:key == 'win_info_name'
+      let l:result s:memvwr_win_info_name
+    elseif a:key == 'win_info_bufnr'
+      let l:result s:memvwr_win_info_bufnr
+    elseif a:key == 'win_info_winid'
+      let l:result s:memvwr_win_info_winid
     elseif a:key == 'popup_info_name'
       let l:result = s:memvwr_popup_info_name
     elseif a:key == 'popup_info_bufnr'
@@ -203,6 +211,9 @@ function! MemvwrGetInfo(key='all')
           \ , 'cursor_match_col': s:memvwr_cursor_match_col
           \ , 'cursor_match_len': s:memvwr_cursor_match_len
           \ , 'is_little_endian': s:memvwr_is_little_endian
+          \ , 'win_info_name': s:memvwr_win_info_name
+          \ , 'win_info_bufnr': s:memvwr_win_info_bufnr
+          \ , 'win_info_winid': s:memvwr_win_info_winid
           \ , 'popup_info_name': s:memvwr_popup_info_name
           \ , 'popup_info_bufnr': s:memvwr_popup_info_bufnr
           \ , 'popup_info_winid': s:memvwr_popup_info_winid
@@ -264,6 +275,7 @@ function! s:MemvwrOpen()
     setlocal number
     setlocal norelativenumber
     setlocal noswapfile
+    setlocal undolevels=-1
     setlocal buftype=nofile
     setlocal signcolumn=no
     setlocal modifiable
@@ -458,11 +470,23 @@ function! MemvwrFromFile(fname, bytes_per_row=16, fmt='x', addr_style=0)
   call MemvwrFromBlob(l:blob, 0, a:bytes_per_row, a:fmt, a:addr_style)
 endfunction
 
+
+"============================================================
+" UI & Dynamic state
+"============================================================
+function! s:MemvwrUIUpdate()
+  if win_getid() == s:memvwr_winid
+    call s:MemvwrUpdateCursorState()
+    call s:MemvwrCursorMatchByteAndASCII()
+    call s:MemvwrWinInfoUpdate()
+    call s:MemvwrPopupInspectorUpdate()
+  endif
+endfunction
+
 " Invalid cursor positions: - the last line in the buffer
 "                           - between the address field columns
 "                           - separator column
 function! s:MemvwrUpdateCursorState()
-  if win_getid() != s:memvwr_winid | return | endif
   let s:memvwr_cursor_line      = line('.')
   let s:memvwr_cursor_col       = col('.')
   let s:memvwr_cursor_is_valid  = 0
@@ -552,11 +576,132 @@ endfunction
 
 
 "------------------------------
-" Pop-up windows
+" Data visualization & Pop-up windows
 " TODO: inspector types: float, double, 64-bit integers
 " TODO: be smarter about popup position when there's no
 "       room for it on the window
 "
+
+" Create and setup buffer/window variables, or goto Memvwr's info window
+function! s:MemvwrWinInfoOpen()
+  if !win_gotoid(s:memvwr_win_info_winid)
+    call s:MemvwrOpen()
+    setlocal splitright
+
+    execute 'vert new | vert resize 32'
+    let s:memvwr_win_info_winid = win_getid()
+
+    setlocal filetype=memvwr_info
+    setlocal syntax=memvwr_info
+    setlocal nowrap
+    setlocal nonumber
+    setlocal norelativenumber
+    setlocal noswapfile
+    setlocal buftype=nofile
+    setlocal signcolumn=no
+    setlocal modifiable
+
+    if s:memvwr_win_info_bufnr > 0 && bufexists(s:memvwr_win_info_bufnr)
+      execute 'buffer ' . s:memvwr_win_info_bufnr
+    else
+      execute 'silent file ' . s:memvwr_win_info_name
+      let s:memvwr_win_info_bufnr = bufnr(s:memvwr_win_info_name)
+      echomsg '[s:MemvwrWinInfo] New buffer [' . s:memvwr_win_info_bufnr . '] assigned to ' . s:memvwr_win_info_name
+    endif
+
+    call s:MemvwrOpen()
+    call s:MemvwrWinInfoUpdate()
+  endif
+endfunction
+
+function! s:MemvwrWinInfoUpdate()
+  if s:memvwr_win_info_bufnr > 0
+    let l:lines = []
+
+    if s:memvwr_cursor_is_valid
+      " TODO: consider doing this only when CursorHold (see `:help CursorHold`)
+      let l:byte = s:memvwr_blob[s:memvwr_cursor_blob_idx]
+      let l:ascii_char = (l:byte >= 32 && l:byte <= 126) ? printf("'%c'", l:byte) : 'N/P'
+
+      call extend(l:lines, [
+             \   printf("=> Byte @ 0x%x", s:memvwr_start_addr + s:memvwr_cursor_blob_idx)
+             \ , printf("  idx:    %d", s:memvwr_cursor_blob_idx)
+             \ , printf("  hex:    %X", l:byte)
+             \ , printf("  oct:    %o", l:byte)
+             \ , printf("  dec:    %d", l:byte)
+             \ , printf("  bin:    %b", l:byte)
+             \ ,        '  ascii:  ' . l:ascii_char
+             \ , printf("  uint8:  %d", s:InspectUint8(s:memvwr_cursor_blob_idx))
+             \ , printf("  int8:   %d", s:InspectInt8(s:memvwr_cursor_blob_idx))
+             \ , printf("  uint16: %d", s:InspectUint16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  int16:  %d", s:InspectInt16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  uint32: %d", s:InspectUint32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  int32:  %d", s:InspectInt32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ ,        '  ' . s:memvwr_endianness_label[s:memvwr_is_little_endian]
+             \ ,        '  [S: swap endianness]'
+             \ ])
+    endif
+
+    call extend(l:lines, [
+           \          '=> Layout'
+           \ , printf("  START:      %s", s:memvwr_start_addr)
+           \ , printf("  BYTES:      %d", s:memvwr_blob_len)
+           \ , printf("  BPR:        %d", s:memvwr_bytes_per_row)
+           \ , printf("  FMT:        %s", s:memvwr_fmt)
+           \ , printf("  ADDR_STYLE: %d", s:memvwr_addr_style)
+           \ ,        '=> Hotkeys'
+           \ ,        '  [%] jump to cursor match'
+           \ ,        '  [i] toggle inspector pop-up'
+           \ ,        '  [I] open info pop-up'
+           \ ,        '  [K] open this window (info)'
+           \ ,        '  [S] swap endianness'
+           \ ])
+
+    call extend(l:lines, [
+           \          '=> Debug'
+           \ , printf("  %-*s", 32, 's:memvwr_name:')                  . s:memvwr_name
+           \ , printf("  %-*s", 32, 's:memvwr_bufnr:')                 . s:memvwr_bufnr
+           \ , printf("  %-*s", 32, 's:memvwr_winid:')                 . s:memvwr_winid
+           \ , printf("  %-*s", 32, 's:memvwr_blob:')                  . string(s:memvwr_blob)
+           \ , printf("  %-*s", 32, 's:memvwr_blob_len:')              . s:memvwr_blob_len
+           \ , printf("  %-*s", 32, 's:memvwr_start_addr:')            . s:memvwr_start_addr
+           \ , printf("  %-*s", 32, 's:memvwr_bytes_per_row:')         . s:memvwr_bytes_per_row
+           \ , printf("  %-*s", 32, 's:memvwr_fmt:')                   . s:memvwr_fmt
+           \ , printf("  %-*s", 32, 's:memvwr_fmt_width:')             . s:memvwr_fmt_width
+           \ , printf("  %-*s", 32, 's:memvwr_addr_style:')            . s:memvwr_addr_style
+           \ , printf("  %-*s", 32, 's:memvwr_header_str:')            . s:memvwr_header_str
+           \ , printf("  %-*s", 32, 's:memvwr_addr_label_cache:')      . s:memvwr_addr_label_cache
+           \ , printf("  %-*s", 32, 's:memvwr_column_bytes:')          . s:memvwr_column_bytes
+           \ , printf("  %-*s", 32, 's:memvwr_column_ascii:')          . s:memvwr_column_ascii
+           \ , printf("  %-*s", 32, 's:memvwr_format_str_addr:')       . s:memvwr_format_str_addr
+           \ , printf("  %-*s", 32, 's:memvwr_format_str_bytes:')      . s:memvwr_format_str_bytes
+           \ , printf("  %-*s", 32, 's:memvwr_cursor_line:')           . s:memvwr_cursor_line
+           \ , printf("  %-*s", 32, 's:memvwr_cursor_col:')            . s:memvwr_cursor_col
+           \ , printf("  %-*s", 32, 's:memvwr_cursor_is_valid:')       . s:memvwr_cursor_is_valid
+           \ , printf("  %-*s", 32, 's:memvwr_cursor_blob_idx:')       . s:memvwr_cursor_blob_idx
+           \ , printf("  %-*s", 32, 's:memvwr_cursor_match_col:')      . s:memvwr_cursor_match_col
+           \ , printf("  %-*s", 32, 's:memvwr_cursor_match_len:')      . s:memvwr_cursor_match_len
+           \ , printf("  %-*s", 32, 's:memvwr_is_little_endian:')      . s:memvwr_is_little_endian
+           \ , printf("  %-*s", 32, 's:memvwr_win_info_name:')         . s:memvwr_win_info_name
+           \ , printf("  %-*s", 32, 's:memvwr_win_info_bufnr:')        . s:memvwr_win_info_bufnr
+           \ , printf("  %-*s", 32, 's:memvwr_win_info_winid:')        . s:memvwr_win_info_winid
+           \ , printf("  %-*s", 32, 's:memvwr_popup_info_name:')       . s:memvwr_popup_info_name
+           \ , printf("  %-*s", 32, 's:memvwr_popup_info_bufnr:')      . s:memvwr_popup_info_bufnr
+           \ , printf("  %-*s", 32, 's:memvwr_popup_info_winid:')      . s:memvwr_popup_info_winid
+           \ , printf("  %-*s", 32, 's:memvwr_popup_inspector_name:')  . s:memvwr_popup_inspector_name
+           \ , printf("  %-*s", 32, 's:memvwr_popup_inspector_bufnr:') . s:memvwr_popup_inspector_bufnr
+           \ , printf("  %-*s", 32, 's:memvwr_popup_inspector_winid:') . s:memvwr_popup_inspector_winid
+           \ ])
+
+    " Need to use win_execute() because winsaveview() and winrestview() only target the current window
+    call win_execute(s:memvwr_win_info_winid
+           \ , 'let l:win_view = winsaveview() | '
+           \ . 'call deletebufline(s:memvwr_win_info_bufnr, 1, ''$'') | '
+           \ . 'call setbufline(s:memvwr_win_info_bufnr, 1, ' . string(l:lines) . ') | '
+           \ . 'call winrestview(l:win_view)'
+           \ )
+  endif
+endfunction
 
 " Relevant highlight groups:
 " Vim:
@@ -590,18 +735,18 @@ function! s:MemvwrPopupOpenInfo()
     let l:ascii_char .= (l:byte >= 32 && l:byte <= 126) ? printf("'%c'", l:byte) : 'N/P'
 
     call extend(l:info_lines, [
-           \   '-Byte-'
+           \   printf("=> Byte @ 0x%x", s:memvwr_start_addr + s:memvwr_cursor_blob_idx)
            \ , printf("    idx: %12d", s:memvwr_cursor_blob_idx)
            \ , printf("    hex: %12X", l:byte)
            \ , printf("    oct: %12o", l:byte)
            \ , printf("    dec: %12d", l:byte)
            \ , printf("    bin: %12b", l:byte)
-           \ , "    ascii: " . l:ascii_char
+           \ ,        '    ascii: ' . l:ascii_char
            \ ])
   endif
 
   call extend(l:info_lines, [
-         \   '-Layout-'
+         \          '=> Layout'
          \ , printf("    START: %10s", s:memvwr_start_addr)
          \ , printf("    BYTES: %10d", s:memvwr_blob_len)
          \ , printf("    BPR: %12d", s:memvwr_bytes_per_row)
@@ -772,6 +917,7 @@ command! -nargs=1 MemvwrReaddr  call s:MemvwrOpen() | call MemvwrFromBlob(s:memv
 command! -nargs=1 MemvwrRebpr   call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, <args>, s:memvwr_fmt, s:memvwr_addr_style)
 command! -nargs=1 MemvwrRefmt   call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, s:memvwr_bytes_per_row, <q-args>, s:memvwr_addr_style)
 command! -nargs=1 MemvwrRestyle call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, s:memvwr_bytes_per_row, s:memvwr_fmt, <args>)
+command!          MemvwrDI      call s:MemvwrWinInfoOpen()
 
 command! -nargs=1 -complete=file MemvwrFopen call s:MemvwrOpen() | call MemvwrFromFile(<q-args>, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
 
@@ -780,21 +926,22 @@ command! -nargs=1 B        call s:MemvwrSetCursorToByte(<q-args>)
 
 command! MemvwrPopinfo            call s:MemvwrPopupOpenInfo()
 command! MemvwrPopinspectorToggle call s:MemvwrPopupInspectorToggle()
-command! MemvwrSwapEndianness     let s:memvwr_is_little_endian = (s:memvwr_is_little_endian) ? 0 : 1 | call s:MemvwrPopupInspectorUpdate()
+command! MemvwrSwapEndianness     let s:memvwr_is_little_endian = (s:memvwr_is_little_endian) ? 0 : 1 | call s:MemvwrUIUpdate()
 
 augroup MemvwrAUG
   autocmd!
-  autocmd FileType memvwr autocmd CursorMoved <buffer> call s:MemvwrUpdateCursorState() | call s:MemvwrCursorMatchByteAndASCII() | call s:MemvwrPopupInspectorUpdate()
+  autocmd FileType memvwr autocmd CursorMoved <buffer> call s:MemvwrUIUpdate()
   autocmd FileType memvwr nnoremap   <silent> <buffer> % :call <SID>MemvwrSetCursorToMatch()<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> I :MemvwrPopinfo<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> i :MemvwrPopinspectorToggle<CR>
+  autocmd FileType memvwr nnoremap   <silent> <buffer> K :MemvwrDI<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> S :MemvwrSwapEndianness<CR>
 augroup END
 
 
-"------------------------------
+"============================================================
 " Utils
-"
+"============================================================
 " NOTE: Inspect...() functions assume the idx argument will not be less than 0
 function! s:InspectUint8(idx)
   if a:idx + 1 > s:memvwr_blob_len | return -1 | endif
@@ -892,7 +1039,6 @@ function! s:ShiftLeft(lhs, rhs)
 endfunction
 
 function! s:ShiftRight(lhs, rhs)
-  " NOTE: can't use bit shifts on Neovim. Using 256 multiplier instead.
   if has('nvim')
     let l:result    = a:lhs
     let l:shift_amt = a:rhs
@@ -919,35 +1065,38 @@ endfunction
 "
 func! DebugMemvwr()
   echomsg '----------------'
-  echomsg printf("%-*s", 28, 's:memvwr_name:')                  . s:memvwr_name
-  echomsg printf("%-*s", 28, 's:memvwr_bufnr:')                 . s:memvwr_bufnr
-  echomsg printf("%-*s", 28, 's:memvwr_winid:')                 . s:memvwr_winid
-  echomsg printf("%-*s", 28, 's:memvwr_blob:')                  . string(s:memvwr_blob)
-  echomsg printf("%-*s", 28, 's:memvwr_blob_len:')              . s:memvwr_blob_len
-  echomsg printf("%-*s", 28, 's:memvwr_start_addr:')            . s:memvwr_start_addr
-  echomsg printf("%-*s", 28, 's:memvwr_bytes_per_row:')         . s:memvwr_bytes_per_row
-  echomsg printf("%-*s", 28, 's:memvwr_fmt:')                   . s:memvwr_fmt
-  echomsg printf("%-*s", 28, 's:memvwr_fmt_width:')             . s:memvwr_fmt_width
-  echomsg printf("%-*s", 28, 's:memvwr_addr_style:')            . s:memvwr_addr_style
-  echomsg printf("%-*s", 28, 's:memvwr_header_str:')            . s:memvwr_header_str
-  echomsg printf("%-*s", 28, 's:memvwr_addr_label_cache:')      . s:memvwr_addr_label_cache
-  echomsg printf("%-*s", 28, 's:memvwr_column_bytes:')          . s:memvwr_column_bytes
-  echomsg printf("%-*s", 28, 's:memvwr_column_ascii:')          . s:memvwr_column_ascii
-  echomsg printf("%-*s", 28, 's:memvwr_format_str_addr:')       . s:memvwr_format_str_addr
-  echomsg printf("%-*s", 28, 's:memvwr_format_str_bytes:')      . s:memvwr_format_str_bytes
-  echomsg printf("%-*s", 28, 's:memvwr_cursor_line:')           . s:memvwr_cursor_line
-  echomsg printf("%-*s", 28, 's:memvwr_cursor_col:')            . s:memvwr_cursor_col
-  echomsg printf("%-*s", 28, 's:memvwr_cursor_is_valid:')       . s:memvwr_cursor_is_valid
-  echomsg printf("%-*s", 28, 's:memvwr_cursor_blob_idx:')       . s:memvwr_cursor_blob_idx
-  echomsg printf("%-*s", 28, 's:memvwr_cursor_match_col:')      . s:memvwr_cursor_match_col
-  echomsg printf("%-*s", 28, 's:memvwr_cursor_match_len:')      . s:memvwr_cursor_match_len
-  echomsg printf("%-*s", 28, 's:memvwr_is_little_endian:')      . s:memvwr_is_little_endian
-  echomsg printf("%-*s", 28, 's:memvwr_popup_info_name:')       . s:memvwr_popup_info_name
-  echomsg printf("%-*s", 28, 's:memvwr_popup_info_bufnr:')      . s:memvwr_popup_info_bufnr
-  echomsg printf("%-*s", 28, 's:memvwr_popup_info_winid:')      . s:memvwr_popup_info_winid
-  echomsg printf("%-*s", 28, 's:memvwr_popup_inspector_name:')  . s:memvwr_popup_inspector_name
-  echomsg printf("%-*s", 28, 's:memvwr_popup_inspector_bufnr:') . s:memvwr_popup_inspector_bufnr
-  echomsg printf("%-*s", 28, 's:memvwr_popup_inspector_winid:') . s:memvwr_popup_inspector_winid
+  echomsg printf("%-*s", 32, 's:memvwr_name:')                  . s:memvwr_name
+  echomsg printf("%-*s", 32, 's:memvwr_bufnr:')                 . s:memvwr_bufnr
+  echomsg printf("%-*s", 32, 's:memvwr_winid:')                 . s:memvwr_winid
+  echomsg printf("%-*s", 32, 's:memvwr_blob:')                  . string(s:memvwr_blob)
+  echomsg printf("%-*s", 32, 's:memvwr_blob_len:')              . s:memvwr_blob_len
+  echomsg printf("%-*s", 32, 's:memvwr_start_addr:')            . s:memvwr_start_addr
+  echomsg printf("%-*s", 32, 's:memvwr_bytes_per_row:')         . s:memvwr_bytes_per_row
+  echomsg printf("%-*s", 32, 's:memvwr_fmt:')                   . s:memvwr_fmt
+  echomsg printf("%-*s", 32, 's:memvwr_fmt_width:')             . s:memvwr_fmt_width
+  echomsg printf("%-*s", 32, 's:memvwr_addr_style:')            . s:memvwr_addr_style
+  echomsg printf("%-*s", 32, 's:memvwr_header_str:')            . s:memvwr_header_str
+  echomsg printf("%-*s", 32, 's:memvwr_addr_label_cache:')      . s:memvwr_addr_label_cache
+  echomsg printf("%-*s", 32, 's:memvwr_column_bytes:')          . s:memvwr_column_bytes
+  echomsg printf("%-*s", 32, 's:memvwr_column_ascii:')          . s:memvwr_column_ascii
+  echomsg printf("%-*s", 32, 's:memvwr_format_str_addr:')       . s:memvwr_format_str_addr
+  echomsg printf("%-*s", 32, 's:memvwr_format_str_bytes:')      . s:memvwr_format_str_bytes
+  echomsg printf("%-*s", 32, 's:memvwr_cursor_line:')           . s:memvwr_cursor_line
+  echomsg printf("%-*s", 32, 's:memvwr_cursor_col:')            . s:memvwr_cursor_col
+  echomsg printf("%-*s", 32, 's:memvwr_cursor_is_valid:')       . s:memvwr_cursor_is_valid
+  echomsg printf("%-*s", 32, 's:memvwr_cursor_blob_idx:')       . s:memvwr_cursor_blob_idx
+  echomsg printf("%-*s", 32, 's:memvwr_cursor_match_col:')      . s:memvwr_cursor_match_col
+  echomsg printf("%-*s", 32, 's:memvwr_cursor_match_len:')      . s:memvwr_cursor_match_len
+  echomsg printf("%-*s", 32, 's:memvwr_is_little_endian:')      . s:memvwr_is_little_endian
+  echomsg printf("%-*s", 32, 's:memvwr_win_info_name:')         . s:memvwr_win_info_name
+  echomsg printf("%-*s", 32, 's:memvwr_win_info_bufnr:')        . s:memvwr_win_info_bufnr
+  echomsg printf("%-*s", 32, 's:memvwr_win_info_winid:')        . s:memvwr_win_info_winid
+  echomsg printf("%-*s", 32, 's:memvwr_popup_info_name:')       . s:memvwr_popup_info_name
+  echomsg printf("%-*s", 32, 's:memvwr_popup_info_bufnr:')      . s:memvwr_popup_info_bufnr
+  echomsg printf("%-*s", 32, 's:memvwr_popup_info_winid:')      . s:memvwr_popup_info_winid
+  echomsg printf("%-*s", 32, 's:memvwr_popup_inspector_name:')  . s:memvwr_popup_inspector_name
+  echomsg printf("%-*s", 32, 's:memvwr_popup_inspector_bufnr:') . s:memvwr_popup_inspector_bufnr
+  echomsg printf("%-*s", 32, 's:memvwr_popup_inspector_winid:') . s:memvwr_popup_inspector_winid
   echomsg '----------------'
 endfunc
 

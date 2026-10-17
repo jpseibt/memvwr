@@ -53,6 +53,7 @@ let g:loaded_memvwr = 1
 " [ ] maybe add a decimal representation style for addresses (byte count).
 " [ ] visual mode could match-highlight the bytes selected.
 " [x] select endianness.
+" [ ] clean integration with termdebug.
 
 let s:memvwr_name          = '(MEMVWR)'
 let s:memvwr_bufnr         = 0
@@ -110,6 +111,11 @@ let s:memvwr_popup_inspector_name  = '(MEMVWR -INSPECTOR-)'
 let s:memvwr_popup_inspector_bufnr = 0
 let s:memvwr_popup_inspector_winid = 0
 
+let s:f32_sign     = 0
+let s:f32_exponent = 0
+let s:f32_mantissa = 0
+let s:f32_type     = '_' " [Normal, Infinity, NaN, Zero, Subnormal]
+
 " Return a dictionary containing all state and config variables, similar
 " to `getwininfo()`, or return them individually.
 " NOTE: The returned dictionary is a new allocation, but s:memvwr_blob
@@ -163,13 +169,13 @@ function! MemvwrGetInfo(key='all')
     elseif a:key == 'cursor_match_len'
       let l:result = s:memvwr_cursor_match_len
     elseif a:key == 'is_little_endian'
-      let l:result s:memvwr_is_little_endian
+      let l:result = s:memvwr_is_little_endian
     elseif a:key == 'win_info_name'
-      let l:result s:memvwr_win_info_name
+      let l:result = s:memvwr_win_info_name
     elseif a:key == 'win_info_bufnr'
-      let l:result s:memvwr_win_info_bufnr
+      let l:result = s:memvwr_win_info_bufnr
     elseif a:key == 'win_info_winid'
-      let l:result s:memvwr_win_info_winid
+      let l:result = s:memvwr_win_info_winid
     elseif a:key == 'popup_info_name'
       let l:result = s:memvwr_popup_info_name
     elseif a:key == 'popup_info_bufnr'
@@ -177,11 +183,17 @@ function! MemvwrGetInfo(key='all')
     elseif a:key == 'popup_info_winid'
       let l:result = s:memvwr_popup_info_winid
     elseif a:key == 'popup_inspector_name'
-      let l:result s:memvwr_popup_inspector_name
+      let l:result = s:memvwr_popup_inspector_name
     elseif a:key == 'popup_inspector_bufnr'
-      let l:result s:memvwr_popup_inspector_bufnr
-    elseif a:key == 'popup_inspector_winid'
-      let l:result s:memvwr_popup_inspector_winid
+      let l:result = s:memvwr_popup_inspector_bufnr
+    elseif a:key == 'f32_sign'
+      let l:result = s:f32_sign
+    elseif a:key == 'f32_exponent'
+      let l:result = s:f32_exponent
+    elseif a:key == 'f32_mantissa'
+      let l:result = s:f32_mantissa
+    elseif a:key == 'f32_type'
+      let l:result = s:f32_type
     else
       echomsg '[MemvwrGetInfo] Invalid key argument "' . a:key . '".'
     endif
@@ -220,9 +232,10 @@ function! MemvwrGetInfo(key='all')
           \ , 'popup_inspector_name': s:memvwr_popup_inspector_name
           \ , 'popup_inspector_bufnr': s:memvwr_popup_inspector_bufnr
           \ , 'popup_inspector_winid': s:memvwr_popup_inspector_winid
-          \ }
-  endif
-
+          \ , 'f32_sign': s:f32_sign
+          \ , 'f32_exponent': s:f32_exponent
+          \ , 'f32_mantissa': s:f32_mantissa
+          \ , 'f32_type': s:f32_type
           \ }
   endif
 
@@ -588,7 +601,7 @@ function! s:MemvwrWinInfoOpen()
     call s:MemvwrOpen()
     setlocal splitright
 
-    execute 'vert new | vert resize 32'
+    execute 'vert new | vert resize 50'
     let s:memvwr_win_info_winid = win_getid()
 
     setlocal filetype=memvwr_info
@@ -623,6 +636,22 @@ function! s:MemvwrWinInfoUpdate()
       let l:byte = s:memvwr_blob[s:memvwr_cursor_blob_idx]
       let l:ascii_char = (l:byte >= 32 && l:byte <= 126) ? printf("'%c'", l:byte) : 'N/P'
 
+      " Floating point numbers parsing
+      let l:float32_str = printf("%f", s:InspectFloat32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+
+      if s:f32_type != 'Normal'
+        if s:f32_type == 'Subnormal' || s:f32_type == 'Zero'
+          let l:float32_str .= ' (' . s:f32_type . ')'
+        else
+          if s:f32_type == 'Infinity'
+            let l:float32_str = (s:f32_sign > 0) ? '-' : '+'
+          else
+            let l:float32_str = ''
+          endif
+          let l:float32_str .= s:f32_type
+        endif
+      endif
+
       call extend(l:lines, [
              \   printf("=> Byte @ 0x%x", s:memvwr_start_addr + s:memvwr_cursor_blob_idx)
              \ , printf("  idx:    %d", s:memvwr_cursor_blob_idx)
@@ -637,8 +666,12 @@ function! s:MemvwrWinInfoUpdate()
              \ , printf("  int16:  %d", s:InspectInt16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ , printf("  uint32: %d", s:InspectUint32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ , printf("  int32:  %d", s:InspectInt32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
-             \ ,        '  ' . s:memvwr_endianness_label[s:memvwr_is_little_endian]
-             \ ,        '  [S: swap endianness]'
+             \ , printf("  f32:    %s", l:float32_str)
+             \ , printf("  |  sign:     %s", s:f32_sign)
+             \ , printf("  |  exponent: %08b (0x%02X)", s:f32_exponent, s:f32_exponent)
+             \ , printf("  |  mantissa: %023b (0x%06X)", s:f32_mantissa, s:f32_mantissa)
+             \ , printf("  |  type:     %s", s:f32_type)
+             \ ,        '  ' . s:memvwr_endianness_label[s:memvwr_is_little_endian] . ' [S: swap endianness]'
              \ ])
     endif
 
@@ -655,43 +688,10 @@ function! s:MemvwrWinInfoUpdate()
            \ ,        '  [I] open info pop-up'
            \ ,        '  [K] open this window (info)'
            \ ,        '  [S] swap endianness'
+           \ ,        '=> Debug State'
            \ ])
 
-    call extend(l:lines, [
-           \          '=> Debug'
-           \ , printf("  %-*s", 32, 's:memvwr_name:')                  . s:memvwr_name
-           \ , printf("  %-*s", 32, 's:memvwr_bufnr:')                 . s:memvwr_bufnr
-           \ , printf("  %-*s", 32, 's:memvwr_winid:')                 . s:memvwr_winid
-           \ , printf("  %-*s", 32, 's:memvwr_blob:')                  . string(s:memvwr_blob)
-           \ , printf("  %-*s", 32, 's:memvwr_blob_len:')              . s:memvwr_blob_len
-           \ , printf("  %-*s", 32, 's:memvwr_start_addr:')            . s:memvwr_start_addr
-           \ , printf("  %-*s", 32, 's:memvwr_bytes_per_row:')         . s:memvwr_bytes_per_row
-           \ , printf("  %-*s", 32, 's:memvwr_fmt:')                   . s:memvwr_fmt
-           \ , printf("  %-*s", 32, 's:memvwr_fmt_width:')             . s:memvwr_fmt_width
-           \ , printf("  %-*s", 32, 's:memvwr_addr_style:')            . s:memvwr_addr_style
-           \ , printf("  %-*s", 32, 's:memvwr_header_str:')            . s:memvwr_header_str
-           \ , printf("  %-*s", 32, 's:memvwr_addr_label_cache:')      . s:memvwr_addr_label_cache
-           \ , printf("  %-*s", 32, 's:memvwr_column_bytes:')          . s:memvwr_column_bytes
-           \ , printf("  %-*s", 32, 's:memvwr_column_ascii:')          . s:memvwr_column_ascii
-           \ , printf("  %-*s", 32, 's:memvwr_format_str_addr:')       . s:memvwr_format_str_addr
-           \ , printf("  %-*s", 32, 's:memvwr_format_str_bytes:')      . s:memvwr_format_str_bytes
-           \ , printf("  %-*s", 32, 's:memvwr_cursor_line:')           . s:memvwr_cursor_line
-           \ , printf("  %-*s", 32, 's:memvwr_cursor_col:')            . s:memvwr_cursor_col
-           \ , printf("  %-*s", 32, 's:memvwr_cursor_is_valid:')       . s:memvwr_cursor_is_valid
-           \ , printf("  %-*s", 32, 's:memvwr_cursor_blob_idx:')       . s:memvwr_cursor_blob_idx
-           \ , printf("  %-*s", 32, 's:memvwr_cursor_match_col:')      . s:memvwr_cursor_match_col
-           \ , printf("  %-*s", 32, 's:memvwr_cursor_match_len:')      . s:memvwr_cursor_match_len
-           \ , printf("  %-*s", 32, 's:memvwr_is_little_endian:')      . s:memvwr_is_little_endian
-           \ , printf("  %-*s", 32, 's:memvwr_win_info_name:')         . s:memvwr_win_info_name
-           \ , printf("  %-*s", 32, 's:memvwr_win_info_bufnr:')        . s:memvwr_win_info_bufnr
-           \ , printf("  %-*s", 32, 's:memvwr_win_info_winid:')        . s:memvwr_win_info_winid
-           \ , printf("  %-*s", 32, 's:memvwr_popup_info_name:')       . s:memvwr_popup_info_name
-           \ , printf("  %-*s", 32, 's:memvwr_popup_info_bufnr:')      . s:memvwr_popup_info_bufnr
-           \ , printf("  %-*s", 32, 's:memvwr_popup_info_winid:')      . s:memvwr_popup_info_winid
-           \ , printf("  %-*s", 32, 's:memvwr_popup_inspector_name:')  . s:memvwr_popup_inspector_name
-           \ , printf("  %-*s", 32, 's:memvwr_popup_inspector_bufnr:') . s:memvwr_popup_inspector_bufnr
-           \ , printf("  %-*s", 32, 's:memvwr_popup_inspector_winid:') . s:memvwr_popup_inspector_winid
-           \ ])
+    call extend(l:lines, s:MemvwrStateStr())
 
     " Need to use win_execute() because winsaveview() and winrestview() only target the current window
     call win_execute(s:memvwr_win_info_winid
@@ -843,7 +843,7 @@ function! s:MemvwrPopupInspectorToggle()
 
     if has('nvim')
       let l:win_width  = 34
-      let l:win_height = 8
+      let l:win_height = 9
       let l:options = #{
             \   relative: 'cursor'
             \ , row: 1
@@ -899,6 +899,7 @@ function! s:MemvwrPopupInspectorUpdate()
              \ , printf(" int16:  %d", s:InspectInt16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ , printf(" uint32: %d", s:InspectUint32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ , printf(" int32:  %d", s:InspectInt32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf(" f32:    %f", s:InspectFloat32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ ])
       call setbufline(s:memvwr_popup_inspector_bufnr, 1, l:inspector_lines)
     endif
@@ -1016,6 +1017,81 @@ function! s:InspectInt32(idx, little_endian)
   return xor(l:result, 0x80000000) - 0x80000000
 endfunction
 
+"------------------------------
+" Floating point numbers
+"
+function! s:InspectFloat32(idx, little_endian)
+  if a:idx + 4 > s:memvwr_blob_len | return -1 | endif
+
+  let l:result  = 0
+  let l:u32_val = s:InspectUint32(a:idx, a:little_endian)
+
+  let l:sign     = and(0x80000000, l:u32_val)
+  let l:exponent = and(0x7F800000, l:u32_val)
+  let l:mantissa = and(0x7FFFFF, l:u32_val)
+
+  let s:f32_sign     = (l:sign != 0) ? 1 : 0
+  let s:f32_exponent = s:ShiftRight(l:exponent, 23)
+  let s:f32_mantissa = l:mantissa
+
+  let l:unbiased_exponent = 0
+  let l:actual_mantissa   = 1.0
+
+  " Check for reserved values (Infinity, NaN)
+  if s:f32_exponent == 255
+    if s:f32_mantissa == 0
+      let s:f32_type = 'Infinity'
+      let l:result = str2float((s:f32_sign > 0 ? '-inf' : '+inf'))
+    else
+      let s:f32_type = 'NaN'
+      let l:result = str2float('nan')
+    endif
+
+  elseif s:f32_exponent == 0
+    if s:f32_mantissa == 0
+      let s:f32_type = 'Zero'
+      let l:result = 0.0
+    else
+      let s:f32_type = 'Subnormal'
+      let l:unbiased_exponent = -126
+      let l:actual_mantissa   = 0.0
+    endif
+
+  else
+    let s:f32_type = 'Normal'
+    let l:unbiased_exponent = s:f32_exponent - 127
+    let l:actual_mantissa   = 1.0
+  endif
+
+  " Calculate the floating point value for Normal and Subnormal numbers
+  if s:f32_type == 'Normal' || s:f32_type == 'Subnormal'
+    let l:shift_amt = 0.5
+    let l:bit_idx = 22
+
+    while l:bit_idx >= 0
+      let l:mask = s:ShiftLeft(1, l:bit_idx)
+      if and(l:mask, s:f32_mantissa)
+        let l:actual_mantissa += l:shift_amt
+      endif
+
+      let l:shift_amt = l:shift_amt / 2.0
+      let l:bit_idx -= 1
+    endwhile
+
+    let l:result = l:actual_mantissa * pow(2.0, l:unbiased_exponent)
+  endif
+
+  if s:f32_sign == 1 && l:result != -1
+    let l:result = -l:result
+  endif
+
+  return l:result
+endfunction
+
+
+"------------------------------
+" Bit-shift ops
+"
 function! s:ShiftLeft(lhs, rhs)
   " NOTE: can't use bit shifts on Neovim. Using 256 multiplier instead.
   if has('nvim')
@@ -1059,47 +1135,57 @@ function! s:ShiftRight(lhs, rhs)
   endif
 endfunction
 
+"------------------------------
+" Debug & State
+"
+function! s:MemvwrStateStr()
+  let l:lines = []
+
+  call extend(l:lines, [
+         \   printf("%-*s", 32, 's:memvwr_name:')                  . s:memvwr_name
+         \ , printf("%-*s", 32, 's:memvwr_bufnr:')                 . s:memvwr_bufnr
+         \ , printf("%-*s", 32, 's:memvwr_winid:')                 . s:memvwr_winid
+         \ , printf("%-*s", 32, 's:memvwr_blob:')                  . string(s:memvwr_blob)
+         \ , printf("%-*s", 32, 's:memvwr_blob_len:')              . s:memvwr_blob_len
+         \ , printf("%-*s", 32, 's:memvwr_start_addr:')            . s:memvwr_start_addr
+         \ , printf("%-*s", 32, 's:memvwr_bytes_per_row:')         . s:memvwr_bytes_per_row
+         \ , printf("%-*s", 32, 's:memvwr_fmt:')                   . s:memvwr_fmt
+         \ , printf("%-*s", 32, 's:memvwr_fmt_width:')             . s:memvwr_fmt_width
+         \ , printf("%-*s", 32, 's:memvwr_addr_style:')            . s:memvwr_addr_style
+         \ , printf("%-*s", 32, 's:memvwr_header_str:')            . s:memvwr_header_str
+         \ , printf("%-*s", 32, 's:memvwr_addr_label_cache:')      . s:memvwr_addr_label_cache
+         \ , printf("%-*s", 32, 's:memvwr_column_bytes:')          . s:memvwr_column_bytes
+         \ , printf("%-*s", 32, 's:memvwr_column_ascii:')          . s:memvwr_column_ascii
+         \ , printf("%-*s", 32, 's:memvwr_format_str_addr:')       . s:memvwr_format_str_addr
+         \ , printf("%-*s", 32, 's:memvwr_format_str_bytes:')      . s:memvwr_format_str_bytes
+         \ , printf("%-*s", 32, 's:memvwr_cursor_line:')           . s:memvwr_cursor_line
+         \ , printf("%-*s", 32, 's:memvwr_cursor_col:')            . s:memvwr_cursor_col
+         \ , printf("%-*s", 32, 's:memvwr_cursor_is_valid:')       . s:memvwr_cursor_is_valid
+         \ , printf("%-*s", 32, 's:memvwr_cursor_blob_idx:')       . s:memvwr_cursor_blob_idx
+         \ , printf("%-*s", 32, 's:memvwr_cursor_match_col:')      . s:memvwr_cursor_match_col
+         \ , printf("%-*s", 32, 's:memvwr_cursor_match_len:')      . s:memvwr_cursor_match_len
+         \ , printf("%-*s", 32, 's:memvwr_is_little_endian:')      . s:memvwr_is_little_endian
+         \ , printf("%-*s", 32, 's:memvwr_win_info_name:')         . s:memvwr_win_info_name
+         \ , printf("%-*s", 32, 's:memvwr_win_info_bufnr:')        . s:memvwr_win_info_bufnr
+         \ , printf("%-*s", 32, 's:memvwr_win_info_winid:')        . s:memvwr_win_info_winid
+         \ , printf("%-*s", 32, 's:memvwr_popup_info_name:')       . s:memvwr_popup_info_name
+         \ , printf("%-*s", 32, 's:memvwr_popup_info_bufnr:')      . s:memvwr_popup_info_bufnr
+         \ , printf("%-*s", 32, 's:memvwr_popup_info_winid:')      . s:memvwr_popup_info_winid
+         \ , printf("%-*s", 32, 's:memvwr_popup_inspector_name:')  . s:memvwr_popup_inspector_name
+         \ , printf("%-*s", 32, 's:memvwr_popup_inspector_bufnr:') . s:memvwr_popup_inspector_bufnr
+         \ , printf("%-*s", 32, 's:memvwr_popup_inspector_winid:') . s:memvwr_popup_inspector_winid
+         \ , printf("%-*s", 32, 's:f32_sign:')                     . s:f32_sign
+         \ , printf("%-*s", 32, 's:f32_exponent:')                 . s:f32_exponent
+         \ , printf("%-*s", 32, 's:f32_mantissa')                  . s:f32_mantissa
+         \ , printf("%-*s", 32, 's:f32_type')                      . s:f32_type
+         \ ])
+
+  return l:lines
+endfunction
 
 "------------------------------
-" Temp / Debug - remove later
+" Temp - remove later
 "
-func! DebugMemvwr()
-  echomsg '----------------'
-  echomsg printf("%-*s", 32, 's:memvwr_name:')                  . s:memvwr_name
-  echomsg printf("%-*s", 32, 's:memvwr_bufnr:')                 . s:memvwr_bufnr
-  echomsg printf("%-*s", 32, 's:memvwr_winid:')                 . s:memvwr_winid
-  echomsg printf("%-*s", 32, 's:memvwr_blob:')                  . string(s:memvwr_blob)
-  echomsg printf("%-*s", 32, 's:memvwr_blob_len:')              . s:memvwr_blob_len
-  echomsg printf("%-*s", 32, 's:memvwr_start_addr:')            . s:memvwr_start_addr
-  echomsg printf("%-*s", 32, 's:memvwr_bytes_per_row:')         . s:memvwr_bytes_per_row
-  echomsg printf("%-*s", 32, 's:memvwr_fmt:')                   . s:memvwr_fmt
-  echomsg printf("%-*s", 32, 's:memvwr_fmt_width:')             . s:memvwr_fmt_width
-  echomsg printf("%-*s", 32, 's:memvwr_addr_style:')            . s:memvwr_addr_style
-  echomsg printf("%-*s", 32, 's:memvwr_header_str:')            . s:memvwr_header_str
-  echomsg printf("%-*s", 32, 's:memvwr_addr_label_cache:')      . s:memvwr_addr_label_cache
-  echomsg printf("%-*s", 32, 's:memvwr_column_bytes:')          . s:memvwr_column_bytes
-  echomsg printf("%-*s", 32, 's:memvwr_column_ascii:')          . s:memvwr_column_ascii
-  echomsg printf("%-*s", 32, 's:memvwr_format_str_addr:')       . s:memvwr_format_str_addr
-  echomsg printf("%-*s", 32, 's:memvwr_format_str_bytes:')      . s:memvwr_format_str_bytes
-  echomsg printf("%-*s", 32, 's:memvwr_cursor_line:')           . s:memvwr_cursor_line
-  echomsg printf("%-*s", 32, 's:memvwr_cursor_col:')            . s:memvwr_cursor_col
-  echomsg printf("%-*s", 32, 's:memvwr_cursor_is_valid:')       . s:memvwr_cursor_is_valid
-  echomsg printf("%-*s", 32, 's:memvwr_cursor_blob_idx:')       . s:memvwr_cursor_blob_idx
-  echomsg printf("%-*s", 32, 's:memvwr_cursor_match_col:')      . s:memvwr_cursor_match_col
-  echomsg printf("%-*s", 32, 's:memvwr_cursor_match_len:')      . s:memvwr_cursor_match_len
-  echomsg printf("%-*s", 32, 's:memvwr_is_little_endian:')      . s:memvwr_is_little_endian
-  echomsg printf("%-*s", 32, 's:memvwr_win_info_name:')         . s:memvwr_win_info_name
-  echomsg printf("%-*s", 32, 's:memvwr_win_info_bufnr:')        . s:memvwr_win_info_bufnr
-  echomsg printf("%-*s", 32, 's:memvwr_win_info_winid:')        . s:memvwr_win_info_winid
-  echomsg printf("%-*s", 32, 's:memvwr_popup_info_name:')       . s:memvwr_popup_info_name
-  echomsg printf("%-*s", 32, 's:memvwr_popup_info_bufnr:')      . s:memvwr_popup_info_bufnr
-  echomsg printf("%-*s", 32, 's:memvwr_popup_info_winid:')      . s:memvwr_popup_info_winid
-  echomsg printf("%-*s", 32, 's:memvwr_popup_inspector_name:')  . s:memvwr_popup_inspector_name
-  echomsg printf("%-*s", 32, 's:memvwr_popup_inspector_bufnr:') . s:memvwr_popup_inspector_bufnr
-  echomsg printf("%-*s", 32, 's:memvwr_popup_inspector_winid:') . s:memvwr_popup_inspector_winid
-  echomsg '----------------'
-endfunc
-
 " NOTE: see `:help type()` and `:help a:000` (only string args)
 func! s:Mem(...)
   let l:start_addr    = s:memvwr_start_addr    " flag:'s' idx:0
@@ -1147,3 +1233,23 @@ func! s:Mem(...)
   call MemvwrFromBlob(s:memvwr_blob, l:start_addr, l:bytes_per_row, l:fmt, l:addr_style)
 endfunc
 command! -nargs=* Mem call s:MemvwrOpen() | call s:Mem(<f-args>)
+
+" Test Blob containing 9 32-bit floats in Big-Endian order
+let s:memvwr_test_blob = 0z00000000.80000000.3F800000.BF800000.7F800000.FF800000.7FC00000.00000001.40490FDB
+let s:memvwr_test_blob_len = len(s:memvwr_test_blob)
+
+command! MemvwrTest call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_test_blob, 0, 4, 'x', 3) | call s:MemvwrWinInfoOpen()
+
+" Test blob (Big-Endian, byte_offset = index * 4):
+" ---------------------------------------------------------------------------
+" Offset | Description          | Hex Value  | Sign | Exponent | Mantissa
+" ---------------------------------------------------------------------------
+"  0     | Positive Zero (+0.0) | 0x00000000 | '+'  | 0x00     | 0x000000
+"  4     | Negative Zero (-0.0) | 0x80000000 | '-'  | 0x00     | 0x000000
+"  8     | Positive One (+1.0)  | 0x3F800000 | '+'  | 0x7F     | 0x000000
+" 12     | Negative One (-1.0)  | 0xBF800000 | '-'  | 0x7F     | 0x000000
+" 16     | +Infinity            | 0x7F800000 | '+'  | 0xFF     | 0x000000
+" 20     | -Infinity            | 0xFF800000 | '-'  | 0xFF     | 0x000000
+" 24     | NaN                  | 0x7FC00000 | '+'  | 0xFF     | 0x400000
+" 28     | Smallest Subnormal   | 0x00000001 | '+'  | 0x00     | 0x000001
+" 32     | Pi Approx (+3.14159) | 0x40490FDB | '+'  | 0x80     | 0x490FDB

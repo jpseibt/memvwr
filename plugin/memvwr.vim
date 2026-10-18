@@ -43,9 +43,9 @@ let g:loaded_memvwr = 1
 " [ ] save to file.
 " [ ] poke memory of debuggee (termdebug).
 " [ ] add more information about analysed dump: expression, timestamp, ... (termdebug).
-" [o] inspector for byte combinations (uint32_t, double, etc.), maybe with floating
+" [x] inspector for byte combinations (uint32_t, double, etc.), maybe with floating
 "     windows, like :Eval command from termdebug. (look into `eval()`)
-" [o] maybe an inspector field or window, if it is proven to not slow down cursor
+" [x] maybe an inspector field or window, if it is proven to not slow down cursor
 "     movements and highlight matches.(?)
 " [x] command to print byte number under the cursor, could also use floating win.
 " [x] command to jump cursor to N'th byte: from start byte, from byte under the
@@ -54,6 +54,9 @@ let g:loaded_memvwr = 1
 " [ ] visual mode could match-highlight the bytes selected.
 " [x] select endianness.
 " [ ] clean integration with termdebug.
+" [ ] be aware of the bits used by Vim's Number type (see `:help v:numbersize` and `:help Number`)
+"  ^- NOTE: Without checking this, the inspector is half broken on systems where Number is a
+"           32-bit signed int (the current inspector is assuming 64-bit).
 
 let s:memvwr_name          = '(MEMVWR)'
 let s:memvwr_bufnr         = 0
@@ -115,6 +118,10 @@ let s:f32_sign     = 0
 let s:f32_exponent = 0
 let s:f32_mantissa = 0
 let s:f32_type     = '_' " [Normal, Infinity, NaN, Zero, Subnormal]
+let s:f64_sign     = 0
+let s:f64_exponent = 0
+let s:f64_mantissa = 0
+let s:f64_type     = '_' " [Normal, Infinity, NaN, Zero, Subnormal]
 
 " Return a dictionary containing all state and config variables, similar
 " to `getwininfo()`, or return them individually.
@@ -194,6 +201,14 @@ function! MemvwrGetInfo(key='all')
       let l:result = s:f32_mantissa
     elseif a:key == 'f32_type'
       let l:result = s:f32_type
+    elseif a:key == 'f64_sign'
+      let l:result = s:f64_sign
+    elseif a:key == 'f64_exponent'
+      let l:result = s:f64_exponent
+    elseif a:key == 'f64_mantissa'
+      let l:result = s:f64_mantissa
+    elseif a:key == 'f64_type'
+      let l:result = s:f64_type
     else
       echomsg '[MemvwrGetInfo] Invalid key argument "' . a:key . '".'
     endif
@@ -236,6 +251,10 @@ function! MemvwrGetInfo(key='all')
           \ , 'f32_exponent': s:f32_exponent
           \ , 'f32_mantissa': s:f32_mantissa
           \ , 'f32_type': s:f32_type
+          \ , 'f64_sign': s:f64_sign
+          \ , 'f64_exponent': s:f64_exponent
+          \ , 'f64_mantissa': s:f64_mantissa
+          \ , 'f64_type': s:f64_type
           \ }
   endif
 
@@ -590,7 +609,6 @@ endfunction
 
 "------------------------------
 " Data visualization & Pop-up windows
-" TODO: inspector types: float, double, 64-bit integers
 " TODO: be smarter about popup position when there's no
 "       room for it on the window
 "
@@ -601,7 +619,7 @@ function! s:MemvwrWinInfoOpen()
     call s:MemvwrOpen()
     setlocal splitright
 
-    execute 'vert new | vert resize 50'
+    execute 'vert new | vert resize 68'
     let s:memvwr_win_info_winid = win_getid()
 
     setlocal filetype=memvwr_info
@@ -636,7 +654,7 @@ function! s:MemvwrWinInfoUpdate()
       let l:byte = s:memvwr_blob[s:memvwr_cursor_blob_idx]
       let l:ascii_char = (l:byte >= 32 && l:byte <= 126) ? printf("'%c'", l:byte) : 'N/P'
 
-      " Floating point numbers parsing
+      " 32-bit floating point number string parsing
       let l:float32_str = printf("%f", s:InspectFloat32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
 
       if s:f32_type != 'Normal'
@@ -652,26 +670,44 @@ function! s:MemvwrWinInfoUpdate()
         endif
       endif
 
+      " 64-bit floating point number string parsing
+      let l:float64_str = printf("%f", s:InspectFloat64(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+
+      if s:f64_type != 'Normal'
+        if s:f64_type == 'Subnormal' || s:f64_type == 'Zero'
+          let l:float64_str .= ' (' . s:f64_type . ')'
+        else
+          if s:f64_type == 'Infinity'
+            let l:float64_str = (s:f64_sign > 0) ? '-' : '+'
+          else
+            let l:float64_str = ''
+          endif
+          let l:float64_str .= s:f64_type
+        endif
+      endif
+
       call extend(l:lines, [
-             \   printf("=> Byte @ 0x%x", s:memvwr_start_addr + s:memvwr_cursor_blob_idx)
-             \ , printf("  idx:    %d", s:memvwr_cursor_blob_idx)
-             \ , printf("  hex:    %X", l:byte)
-             \ , printf("  oct:    %o", l:byte)
-             \ , printf("  dec:    %d", l:byte)
-             \ , printf("  bin:    %b", l:byte)
-             \ ,        '  ascii:  ' . l:ascii_char
-             \ , printf("  uint8:  %d", s:InspectUint8(s:memvwr_cursor_blob_idx))
+             \   printf("=> Byte @ 0x%x (idx: %d)", s:memvwr_start_addr + s:memvwr_cursor_blob_idx, s:memvwr_cursor_blob_idx)
+             \ , printf("  hex: %2X | oct: %3o | dec: %3d | bin: %08b | ascii: %3s", l:byte, l:byte, l:byte, l:byte, l:ascii_char)
+             \ ,        '  # ' . s:memvwr_endianness_label[s:memvwr_is_little_endian] . ' [S: swap endianness]'
+             \ , printf("  uint8:  %u", s:InspectUint8(s:memvwr_cursor_blob_idx))
              \ , printf("  int8:   %d", s:InspectInt8(s:memvwr_cursor_blob_idx))
-             \ , printf("  uint16: %d", s:InspectUint16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  uint16: %u", s:InspectUint16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ , printf("  int16:  %d", s:InspectInt16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
-             \ , printf("  uint32: %d", s:InspectUint32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  uint32: %u", s:InspectUint32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ , printf("  int32:  %d", s:InspectInt32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  uint64: %u", s:InspectUint64(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  int64:  %d", s:InspectInt64(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ , printf("  f32:    %s", l:float32_str)
              \ , printf("  |  sign:     %s", s:f32_sign)
              \ , printf("  |  exponent: %08b (0x%02X)", s:f32_exponent, s:f32_exponent)
              \ , printf("  |  mantissa: %023b (0x%06X)", s:f32_mantissa, s:f32_mantissa)
              \ , printf("  |  type:     %s", s:f32_type)
-             \ ,        '  ' . s:memvwr_endianness_label[s:memvwr_is_little_endian] . ' [S: swap endianness]'
+             \ , printf("  f64:    %s", l:float64_str)
+             \ , printf("  |  sign:     %s", s:f64_sign)
+             \ , printf("  |  exponent: %011b (0x%03X)", s:f64_exponent, s:f64_exponent)
+             \ , printf("  |  mantissa: %052b (0x%013X)", s:f64_mantissa, s:f64_mantissa)
+             \ , printf("  |  type:     %s", s:f64_type)
              \ ])
     endif
 
@@ -843,7 +879,7 @@ function! s:MemvwrPopupInspectorToggle()
 
     if has('nvim')
       let l:win_width  = 34
-      let l:win_height = 9
+      let l:win_height = 12
       let l:options = #{
             \   relative: 'cursor'
             \ , row: 1
@@ -893,13 +929,16 @@ function! s:MemvwrPopupInspectorUpdate()
       call extend(l:inspector_lines, [
              \   s:memvwr_endianness_label[s:memvwr_is_little_endian] . ' [S: swap endianness]'
              \ , printf("-> 0x%x", s:memvwr_start_addr + s:memvwr_cursor_blob_idx)
-             \ , printf(" uint8:  %d", s:InspectUint8(s:memvwr_cursor_blob_idx))
+             \ , printf(" uint8:  %u", s:InspectUint8(s:memvwr_cursor_blob_idx))
              \ , printf(" int8:   %d", s:InspectInt8(s:memvwr_cursor_blob_idx))
-             \ , printf(" uint16: %d", s:InspectUint16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf(" uint16: %u", s:InspectUint16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ , printf(" int16:  %d", s:InspectInt16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
-             \ , printf(" uint32: %d", s:InspectUint32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf(" uint32: %u", s:InspectUint32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ , printf(" int32:  %d", s:InspectInt32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
-             \ , printf(" f32:    %f", s:InspectFloat32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf(" uint64: %u", s:InspectUint64(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf(" int64:  %d", s:InspectInt64(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf(" f32:    %+1f", s:InspectFloat32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf(" f64:    %+1f", s:InspectFloat64(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ ])
       call setbufline(s:memvwr_popup_inspector_bufnr, 1, l:inspector_lines)
     endif
@@ -992,10 +1031,31 @@ function! s:InspectUint32(idx, little_endian)
   return l:result
 endfunction
 
+function! s:InspectUint64(idx, little_endian)
+  if a:idx + 8 > s:memvwr_blob_len | return -1 | endif
+
+  " Separate into two 32-bit words
+  let l:word0 = s:InspectUint32(a:idx, a:little_endian)
+  let l:word1 = s:InspectUint32(a:idx + 4, a:little_endian)
+
+  let l:lsb = 0
+  let l:msb = 0
+  if a:little_endian
+    let l:lsb = l:word0
+    let l:msb = l:word1
+  else
+    let l:lsb = l:word1
+    let l:msb = l:word0
+  endif
+
+  return or(s:ShiftLeft(l:msb, 32), l:lsb)
+endfunction
+
 "------------------------------
 " NOTE: see Hacker's Delight:
 " -> Chapter 2-6 Sign Extension
-"
+"    ... assuming Vim's Number type is 64-bit signed
+
 function! s:InspectInt8(idx)
   let l:result = s:InspectUint8(a:idx)
   if l:result == -1 | return -1 | endif
@@ -1015,6 +1075,13 @@ function! s:InspectInt32(idx, little_endian)
   if l:result == -1 | return -1 | endif
 
   return xor(l:result, 0x80000000) - 0x80000000
+endfunction
+
+function! s:InspectInt64(idx, little_endian)
+  let l:result = s:InspectUint64(a:idx, a:little_endian)
+  if l:result == -1 | return -1 | endif
+
+  return l:result
 endfunction
 
 "------------------------------
@@ -1041,7 +1108,7 @@ function! s:InspectFloat32(idx, little_endian)
   if s:f32_exponent == 255
     if s:f32_mantissa == 0
       let s:f32_type = 'Infinity'
-      let l:result = str2float((s:f32_sign > 0 ? '-inf' : '+inf'))
+      let l:result = str2float('inf')
     else
       let s:f32_type = 'NaN'
       let l:result = str2float('nan')
@@ -1081,7 +1148,76 @@ function! s:InspectFloat32(idx, little_endian)
     let l:result = l:actual_mantissa * pow(2.0, l:unbiased_exponent)
   endif
 
-  if s:f32_sign == 1 && l:result != -1
+  if s:f32_sign == 1 && s:f32_type != 'NaN'
+    let l:result = -l:result
+  endif
+
+  return l:result
+endfunction
+
+function! s:InspectFloat64(idx, little_endian)
+  if a:idx + 8 > s:memvwr_blob_len | return -1 | endif
+
+  let l:result  = 0
+  let l:u64_val = s:InspectUint64(a:idx, a:little_endian)
+
+  " NOTE: l:sign -> check for negative signed 64-bit Number type (assumed)
+  let l:sign     = (l:u64_val < 0) ? 1 : 0
+  let l:exponent = and(0x7FF0000000000000, l:u64_val)
+  let l:mantissa = and(0x0FFFFFFFFFFFFF, l:u64_val)
+
+  let s:f64_sign     = l:sign
+  let s:f64_exponent = s:ShiftRight(l:exponent, 52)
+  let s:f64_mantissa = l:mantissa
+
+  let l:unbiased_exponent = 0
+  let l:actual_mantissa   = 1.0
+
+  " Check for reserved values (Infinity, NaN)
+  if s:f64_exponent == 2047
+    if s:f64_mantissa == 0
+      let s:f64_type = 'Infinity'
+      let l:result = str2float('inf')
+    else
+      let s:f64_type = 'NaN'
+      let l:result = str2float('nan')
+    endif
+
+  elseif s:f64_exponent == 0
+    if s:f64_mantissa == 0
+      let s:f64_type = 'Zero'
+      let l:result = 0.0
+    else
+      let s:f64_type = 'Subnormal'
+      let l:unbiased_exponent = -1022
+      let l:actual_mantissa   = 0.0
+    endif
+
+  else
+    let s:f64_type = 'Normal'
+    let l:unbiased_exponent = s:f64_exponent - 1023
+    let l:actual_mantissa   = 1.0
+  endif
+
+  " Calculate the floating point value for Normal and Subnormal numbers
+  if s:f64_type == 'Normal' || s:f64_type == 'Subnormal'
+    let l:shift_amt = 0.5
+    let l:bit_idx = 51
+
+    while l:bit_idx >= 0
+      let l:mask = s:ShiftLeft(1, l:bit_idx)
+      if and(l:mask, s:f64_mantissa)
+        let l:actual_mantissa += l:shift_amt
+      endif
+
+      let l:shift_amt = l:shift_amt / 2.0
+      let l:bit_idx -= 1
+    endwhile
+
+    let l:result = l:actual_mantissa * pow(2.0, l:unbiased_exponent)
+  endif
+
+  if s:f64_sign == 1 && s:f64_type != 'NaN'
     let l:result = -l:result
   endif
 
@@ -1176,8 +1312,12 @@ function! s:MemvwrStateStr()
          \ , printf("%-*s", 32, 's:memvwr_popup_inspector_winid:') . s:memvwr_popup_inspector_winid
          \ , printf("%-*s", 32, 's:f32_sign:')                     . s:f32_sign
          \ , printf("%-*s", 32, 's:f32_exponent:')                 . s:f32_exponent
-         \ , printf("%-*s", 32, 's:f32_mantissa')                  . s:f32_mantissa
-         \ , printf("%-*s", 32, 's:f32_type')                      . s:f32_type
+         \ , printf("%-*s", 32, 's:f32_mantissa:')                 . s:f32_mantissa
+         \ , printf("%-*s", 32, 's:f32_type:')                     . s:f32_type
+         \ , printf("%-*s", 32, 's:f64_sign:')                     . s:f64_sign
+         \ , printf("%-*s", 32, 's:f64_exponent:')                 . s:f64_exponent
+         \ , printf("%-*s", 32, 's:f64_mantissa:')                 . s:f64_mantissa
+         \ , printf("%-*s", 32, 's:f64_type:')                     . s:f64_type
          \ ])
 
   return l:lines
@@ -1234,16 +1374,15 @@ func! s:Mem(...)
 endfunc
 command! -nargs=* Mem call s:MemvwrOpen() | call s:Mem(<f-args>)
 
-" Test Blob containing 9 32-bit floats in Big-Endian order
-let s:memvwr_test_blob = 0z00000000.80000000.3F800000.BF800000.7F800000.FF800000.7FC00000.00000001.40490FDB
+let s:memvwr_test_blob = 0z00000000.80000000.3F800000.BF800000.7F800000.FF800000.7FC00000.00000001.40490FDB.00000000.00000000.80000000.00000000.3FF00000.00000000.BFF00000.00000000.7FF00000.00000000.FFF00000.00000000.7FF80000.00000000.400921FB.54442D18.40000000.00000000.0000007F.FFFFFFFF.FFFFFFFF
 let s:memvwr_test_blob_len = len(s:memvwr_test_blob)
 
 command! MemvwrTest call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_test_blob, 0, 4, 'x', 3) | call s:MemvwrWinInfoOpen()
 
-" Test blob (Big-Endian, byte_offset = index * 4):
-" ---------------------------------------------------------------------------
+" Test blob (Big-Endian 32-bit float):
+" -----------------------------------------------------------------------
 " Offset | Description          | Hex Value  | Sign | Exponent | Mantissa
-" ---------------------------------------------------------------------------
+" -----------------------------------------------------------------------
 "  0     | Positive Zero (+0.0) | 0x00000000 | '+'  | 0x00     | 0x000000
 "  4     | Negative Zero (-0.0) | 0x80000000 | '-'  | 0x00     | 0x000000
 "  8     | Positive One (+1.0)  | 0x3F800000 | '+'  | 0x7F     | 0x000000
@@ -1253,3 +1392,16 @@ command! MemvwrTest call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_test_blob
 " 24     | NaN                  | 0x7FC00000 | '+'  | 0xFF     | 0x400000
 " 28     | Smallest Subnormal   | 0x00000001 | '+'  | 0x00     | 0x000001
 " 32     | Pi Approx (+3.14159) | 0x40490FDB | '+'  | 0x80     | 0x490FDB
+
+" Test blob (Big-Endian 64-bit float):
+" --------------------------------------------------------------------------------
+" Offset | Description          | Hex Value           | Sign | Exponent | Mantissa
+" --------------------------------------------------------------------------------
+" 36     | Positive Zero (+0.0) | 0x00000000 00000000 | '+'  | 0x000    | 0x0000000000000
+" 44     | Negative Zero (-0.0) | 0x80000000 00000000 | '-'  | 0x000    | 0x0000000000000
+" 52     | Positive One (+1.0)  | 0x3FF00000 00000000 | '+'  | 0x3FF    | 0x0000000000000
+" 60     | Negative One (-1.0)  | 0xBFF00000 00000000 | '-'  | 0x3FF    | 0x0000000000000
+" 68     | +Infinity            | 0x7FF00000 00000000 | '+'  | 0x7FF    | 0x0000000000000
+" 76     | -Infinity            | 0xFFF00000 00000000 | '-'  | 0x7FF    | 0x0000000000000
+" 84     | NaN                  | 0x7FF80000 00000000 | '+'  | 0x7FF    | 0x8000000000000
+" 92     | Pi Approx (+3.14159) | 0x400921FB 54442D18 | '+'  | 0x400    | 0x921FB54442D18

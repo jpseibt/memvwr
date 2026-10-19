@@ -8,8 +8,8 @@
 "        memory viewer window for termdebug, inspired by the one present
 "        in the raddbg and the termdebug disassembly window.
 "        First draft and commits for reference:
-"        [2026-08-10] First: github.com/jpseibt/nazfig_repo/commits/2fe1eac
-"        [2026-08-18] Last:  github.com/jpseibt/nazfig_repo/commits/547a72b
+"        [2026-08-10] First: https://github.com/jpseibt/nazfig_repo/commits/2fe1eac
+"        [2026-08-18] Last:  https://github.com/jpseibt/nazfig_repo/commits/547a72b
 
 if exists('g:loaded_memvwr') | finish | endif
 let g:loaded_memvwr = 1
@@ -688,7 +688,7 @@ function! s:MemvwrWinInfoUpdate()
 
       call extend(l:lines, [
              \   printf("=> Byte @ 0x%x (idx: %d)", s:memvwr_start_addr + s:memvwr_cursor_blob_idx, s:memvwr_cursor_blob_idx)
-             \ , printf("  hex: %2X | oct: %3o | dec: %3d | bin: %08b | ascii: %3s", l:byte, l:byte, l:byte, l:byte, l:ascii_char)
+             \ , printf("   |  hex: %2X | oct: %3o | dec: %3d | bin: %08b | ascii: %3s", l:byte, l:byte, l:byte, l:byte, l:ascii_char)
              \ ,        '  # ' . s:memvwr_endianness_label[s:memvwr_is_little_endian] . ' [S: swap endianness]'
              \ , printf("  uint8:  %u", s:InspectUint8(s:memvwr_cursor_blob_idx))
              \ , printf("  int8:   %d", s:InspectInt8(s:memvwr_cursor_blob_idx))
@@ -761,6 +761,7 @@ function! s:MemvwrPopupOpenInfo()
   call setbufvar(s:memvwr_popup_info_bufnr, '&bufhidden', 'hide')
   call setbufvar(s:memvwr_popup_info_bufnr, '&swapfile', 0)
   call setbufvar(s:memvwr_popup_info_bufnr, '&undolevels', -1)
+  call setbufvar(s:memvwr_popup_info_bufnr, '&filetype', 'memvwr_info')
 
   " See `:help list` and `:help extend()`
   let l:info_lines = []
@@ -874,11 +875,12 @@ function! s:MemvwrPopupInspectorToggle()
     call setbufvar(s:memvwr_popup_inspector_bufnr, '&bufhidden', 'hide')
     call setbufvar(s:memvwr_popup_inspector_bufnr, '&swapfile', 0)
     call setbufvar(s:memvwr_popup_inspector_bufnr, '&undolevels', -1)
+    call setbufvar(s:memvwr_popup_inspector_bufnr, '&filetype', 'memvwr_info')
 
     let l:popup_title = printf("[%d]%s", s:memvwr_popup_inspector_bufnr, s:memvwr_popup_inspector_name)
 
     if has('nvim')
-      let l:win_width  = 34
+      let l:win_width  = 31
       let l:win_height = 12
       let l:options = #{
             \   relative: 'cursor'
@@ -927,18 +929,18 @@ function! s:MemvwrPopupInspectorUpdate()
       let l:inspector_lines = []
 
       call extend(l:inspector_lines, [
-             \   s:memvwr_endianness_label[s:memvwr_is_little_endian] . ' [S: swap endianness]'
-             \ , printf("-> 0x%x", s:memvwr_start_addr + s:memvwr_cursor_blob_idx)
-             \ , printf(" uint8:  %u", s:InspectUint8(s:memvwr_cursor_blob_idx))
-             \ , printf(" int8:   %d", s:InspectInt8(s:memvwr_cursor_blob_idx))
-             \ , printf(" uint16: %u", s:InspectUint16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
-             \ , printf(" int16:  %d", s:InspectInt16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
-             \ , printf(" uint32: %u", s:InspectUint32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
-             \ , printf(" int32:  %d", s:InspectInt32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
-             \ , printf(" uint64: %u", s:InspectUint64(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
-             \ , printf(" int64:  %d", s:InspectInt64(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
-             \ , printf(" f32:    %+1f", s:InspectFloat32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
-             \ , printf(" f64:    %+1f", s:InspectFloat64(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \   printf("=> 0x%x", s:memvwr_start_addr + s:memvwr_cursor_blob_idx)
+             \ ,        '  # ' . s:memvwr_endianness_label[s:memvwr_is_little_endian] . ' [S: swap]'
+             \ , printf("  uint8:  %u", s:InspectUint8(s:memvwr_cursor_blob_idx))
+             \ , printf("  int8:   %d", s:InspectInt8(s:memvwr_cursor_blob_idx))
+             \ , printf("  uint16: %u", s:InspectUint16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  int16:  %d", s:InspectInt16(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  uint32: %u", s:InspectUint32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  int32:  %d", s:InspectInt32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  uint64: %u", s:InspectUint64(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  int64:  %d", s:InspectInt64(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  f32:    %+1g", s:InspectFloat32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
+             \ , printf("  f64:    %+1g", s:InspectFloat64(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ ])
       call setbufline(s:memvwr_popup_inspector_bufnr, 1, l:inspector_lines)
     endif

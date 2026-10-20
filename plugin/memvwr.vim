@@ -2,7 +2,7 @@
 " Author:      J. Paulo Seibt <jpseibt@gmail.com>
 " Created:     2026 Aug 10
 " License:     MIT (https://opensource.org/license/mit/)
-" Last Change: 2026 Aug 18
+" Last Change: 2026 Oct 20
 
 " ~ naz: started as part of my personal vimrc to be used as a dedicated
 "        memory viewer window for termdebug, inspired by the one present
@@ -713,7 +713,7 @@ function! s:MemvwrWinInfoUpdate()
 
     call extend(l:lines, [
            \          '=> Layout'
-           \ , printf("  START:      %s", s:memvwr_start_addr)
+           \ , printf("  START:      %x", s:memvwr_start_addr)
            \ , printf("  BYTES:      %d", s:memvwr_blob_len)
            \ , printf("  BPR:        %d", s:memvwr_bytes_per_row)
            \ , printf("  FMT:        %s", s:memvwr_fmt)
@@ -768,27 +768,33 @@ function! s:MemvwrPopupOpenInfo()
 
   if s:memvwr_cursor_is_valid
     let l:byte = s:memvwr_blob[s:memvwr_cursor_blob_idx]
-    let l:ascii_char  = '       '
-    let l:ascii_char .= (l:byte >= 32 && l:byte <= 126) ? printf("'%c'", l:byte) : 'N/P'
+    let l:ascii_char = (l:byte >= 32 && l:byte <= 126) ? printf("'%c'", l:byte) : 'N/P'
 
     call extend(l:info_lines, [
            \   printf("=> Byte @ 0x%x", s:memvwr_start_addr + s:memvwr_cursor_blob_idx)
-           \ , printf("    idx: %12d", s:memvwr_cursor_blob_idx)
-           \ , printf("    hex: %12X", l:byte)
-           \ , printf("    oct: %12o", l:byte)
-           \ , printf("    dec: %12d", l:byte)
-           \ , printf("    bin: %12b", l:byte)
-           \ ,        '    ascii: ' . l:ascii_char
+           \ , printf("  idx:        %d", s:memvwr_cursor_blob_idx)
+           \ , printf("  hex:        %02X", l:byte)
+           \ , printf("  oct:        %03o", l:byte)
+           \ , printf("  dec:        %d", l:byte)
+           \ , printf("  bin:        %08b", l:byte)
+           \ ,        '  ascii:      ' . l:ascii_char
            \ ])
   endif
 
+  let l:start_addr_indent = 5
+  let i = s:memvwr_start_addr
+  while i > 0xffffffffffffff
+    let i = s:ShiftRight(i, 4)
+    let l:start_addr_indent -= 1
+  endwhile
+
   call extend(l:info_lines, [
          \          '=> Layout'
-         \ , printf("    START: %10s", s:memvwr_start_addr)
-         \ , printf("    BYTES: %10d", s:memvwr_blob_len)
-         \ , printf("    BPR: %12d", s:memvwr_bytes_per_row)
-         \ , printf("    FMT: %12s", s:memvwr_fmt)
-         \ , printf("    ADDR_STYLE: %5d", s:memvwr_addr_style)
+         \ , printf("  START: %s%x", repeat(' ', l:start_addr_indent), s:memvwr_start_addr)
+         \ , printf("  BYTES:      %d", s:memvwr_blob_len)
+         \ , printf("  BPR:        %d", s:memvwr_bytes_per_row)
+         \ , printf("  FMT:        %s", s:memvwr_fmt)
+         \ , printf("  ADDR_STYLE: %d", s:memvwr_addr_style)
          \ ])
 
   silent call deletebufline(s:memvwr_popup_info_bufnr, 1, '$')
@@ -797,7 +803,7 @@ function! s:MemvwrPopupOpenInfo()
   let l:popup_title = printf("[%d]%s", s:memvwr_popup_info_bufnr, s:memvwr_popup_info_name)
 
   if has('nvim')
-    let l:win_width  = 22
+    let l:win_width  = 28
     let l:win_height = len(l:info_lines) 
     let l:options = #{
           \   relative: 'cursor'

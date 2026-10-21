@@ -53,10 +53,11 @@ let g:loaded_memvwr = 1
 " [ ] maybe add a decimal representation style for addresses (byte count).
 " [ ] visual mode could match-highlight the bytes selected.
 " [x] select endianness.
-" [ ] clean integration with termdebug.
+" [o] clean integration with termdebug.
 " [ ] be aware of the bits used by Vim's Number type (see `:help v:numbersize` and `:help Number`)
 "  ^- NOTE: Without checking this, the inspector is half broken on systems where Number is a
 "           32-bit signed int (the current inspector is assuming 64-bit).
+" [ ] look into making window positions more flexible (look into how winid is being handled).
 
 let s:memvwr_name          = '(MEMVWR)'
 let s:memvwr_bufnr         = 0
@@ -296,9 +297,9 @@ function! MemvwrGetByteInfo(number, mode=0)
 endfunction
 
 " Create and setup buffer/window variables, or goto Memvwr window
-function! s:MemvwrOpen()
+function! s:MemvwrOpen(mod='rightbelow')
   if !win_gotoid(s:memvwr_winid)
-    execute 'rightbelow new'
+    execute a:mod . ' new'
     let s:memvwr_winid = win_getid()
 
     setlocal filetype=memvwr
@@ -493,13 +494,13 @@ function! MemvwrFromBlob(blob, start_addr, bytes_per_row=16, fmt='x', addr_style
   call setbufline(s:memvwr_bufnr, 1, l:mem_lines)
 endfunction
 
-function! MemvwrFromFile(fname, bytes_per_row=16, fmt='x', addr_style=0)
+function! MemvwrFromFile(fname, start_addr=0, bytes_per_row=16, fmt='x', addr_style=0)
   let l:blob = readblob(a:fname)
   if empty(l:blob)
     echomsg '[MemvwrFromFile] Empty blob from readblob("' . a:fname . '"). Aborting...'
     return
   endif
-  call MemvwrFromBlob(l:blob, 0, a:bytes_per_row, a:fmt, a:addr_style)
+  call MemvwrFromBlob(l:blob, a:start_addr, a:bytes_per_row, a:fmt, a:addr_style)
 endfunction
 
 
@@ -784,7 +785,7 @@ function! s:MemvwrPopupOpenInfo()
   let l:start_addr_indent = 5
   let i = s:memvwr_start_addr
   while i > 0xffffffffffffff
-    let i = s:ShiftRight(i, 4)
+    let i = MemvwrShiftRight(i, 4)
     let l:start_addr_indent -= 1
   endwhile
 
@@ -957,7 +958,7 @@ endfunction
 "------------------------------
 " Commands and maps
 "
-command!          Memvwr        call s:MemvwrOpen()
+command! -nargs=? Memvwr        call s:MemvwrOpen(<q-args>)
 command!          MemvwrReset   call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr)
 command!          MemvwrRegen   call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
 command! -nargs=1 MemvwrReblob  call s:MemvwrOpen() | call MemvwrFromBlob(<args>, s:memvwr_start_addr, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
@@ -1006,9 +1007,9 @@ function! s:InspectUint16(idx, little_endian)
 
   if a:little_endian
     let l:result = l:byte0
-    let l:result = or(l:result, s:ShiftLeft(l:byte1, 8))
+    let l:result = or(l:result, MemvwrShiftLeft(l:byte1, 8))
   else
-    let l:result = s:ShiftLeft(l:byte0, 8)
+    let l:result = MemvwrShiftLeft(l:byte0, 8)
     let l:result = or(l:result, l:byte1)
   endif
 
@@ -1026,13 +1027,13 @@ function! s:InspectUint32(idx, little_endian)
 
   if a:little_endian
     let l:result = l:byte0
-    let l:result = or(l:result, s:ShiftLeft(l:byte1, 8))
-    let l:result = or(l:result, s:ShiftLeft(l:byte2, 16))
-    let l:result = or(l:result, s:ShiftLeft(l:byte3, 24))
+    let l:result = or(l:result, MemvwrShiftLeft(l:byte1, 8))
+    let l:result = or(l:result, MemvwrShiftLeft(l:byte2, 16))
+    let l:result = or(l:result, MemvwrShiftLeft(l:byte3, 24))
   else
-    let l:result = s:ShiftLeft(l:byte0, 24)
-    let l:result = or(l:result, s:ShiftLeft(l:byte1, 16))
-    let l:result = or(l:result, s:ShiftLeft(l:byte2, 8))
+    let l:result = MemvwrShiftLeft(l:byte0, 24)
+    let l:result = or(l:result, MemvwrShiftLeft(l:byte1, 16))
+    let l:result = or(l:result, MemvwrShiftLeft(l:byte2, 8))
     let l:result = or(l:result, l:byte3)
   endif
 
@@ -1056,7 +1057,7 @@ function! s:InspectUint64(idx, little_endian)
     let l:msb = l:word0
   endif
 
-  return or(s:ShiftLeft(l:msb, 32), l:lsb)
+  return or(MemvwrShiftLeft(l:msb, 32), l:lsb)
 endfunction
 
 "------------------------------
@@ -1106,7 +1107,7 @@ function! s:InspectFloat32(idx, little_endian)
   let l:mantissa = and(0x7FFFFF, l:u32_val)
 
   let s:f32_sign     = (l:sign != 0) ? 1 : 0
-  let s:f32_exponent = s:ShiftRight(l:exponent, 23)
+  let s:f32_exponent = MemvwrShiftRight(l:exponent, 23)
   let s:f32_mantissa = l:mantissa
 
   let l:unbiased_exponent = 0
@@ -1144,7 +1145,7 @@ function! s:InspectFloat32(idx, little_endian)
     let l:bit_idx = 22
 
     while l:bit_idx >= 0
-      let l:mask = s:ShiftLeft(1, l:bit_idx)
+      let l:mask = MemvwrShiftLeft(1, l:bit_idx)
       if and(l:mask, s:f32_mantissa)
         let l:actual_mantissa += l:shift_amt
       endif
@@ -1175,7 +1176,7 @@ function! s:InspectFloat64(idx, little_endian)
   let l:mantissa = and(0x0FFFFFFFFFFFFF, l:u64_val)
 
   let s:f64_sign     = l:sign
-  let s:f64_exponent = s:ShiftRight(l:exponent, 52)
+  let s:f64_exponent = MemvwrShiftRight(l:exponent, 52)
   let s:f64_mantissa = l:mantissa
 
   let l:unbiased_exponent = 0
@@ -1213,7 +1214,7 @@ function! s:InspectFloat64(idx, little_endian)
     let l:bit_idx = 51
 
     while l:bit_idx >= 0
-      let l:mask = s:ShiftLeft(1, l:bit_idx)
+      let l:mask = MemvwrShiftLeft(1, l:bit_idx)
       if and(l:mask, s:f64_mantissa)
         let l:actual_mantissa += l:shift_amt
       endif
@@ -1230,53 +1231,6 @@ function! s:InspectFloat64(idx, little_endian)
   endif
 
   return l:result
-endfunction
-
-
-"------------------------------
-" Bit-shift ops
-"
-function! s:ShiftLeft(lhs, rhs)
-  " NOTE: can't use bit shifts on Neovim. Using 256 multiplier instead.
-  if has('nvim')
-    let l:result    = a:lhs
-    let l:shift_amt = a:rhs
-
-    while l:shift_amt >= 8
-      let l:result    *= 256
-      let l:shift_amt -= 8
-    endwhile
-
-    while l:shift_amt > 0
-      let l:result    *= 2
-      let l:shift_amt -= 1
-    endwhile
-
-    return l:result
-  else
-    return a:lhs << a:rhs
-  endif
-endfunction
-
-function! s:ShiftRight(lhs, rhs)
-  if has('nvim')
-    let l:result    = a:lhs
-    let l:shift_amt = a:rhs
-
-    while l:shift_amt >= 8
-      let l:result    /= 256
-      let l:shift_amt -= 8
-    endwhile
-
-    while l:shift_amt > 0
-      let l:result    /= 2
-      let l:shift_amt -= 1
-    endwhile
-
-    return l:result
-  else
-    return a:lhs >> a:rhs
-  endif
 endfunction
 
 "------------------------------
@@ -1330,6 +1284,88 @@ function! s:MemvwrStateStr()
 
   return l:lines
 endfunction
+
+"------------------------------
+" Bit-shift ops & Global functions
+"
+function! MemvwrShiftLeft(lhs, rhs)
+  " NOTE: can't use bit shifts on Neovim. Using 256 multiplier instead.
+  if has('nvim')
+    let l:result    = a:lhs
+    let l:shift_amt = a:rhs
+
+    while l:shift_amt >= 8
+      let l:result    *= 256
+      let l:shift_amt -= 8
+    endwhile
+
+    while l:shift_amt > 0
+      let l:result    *= 2
+      let l:shift_amt -= 1
+    endwhile
+
+    return l:result
+  else
+    return a:lhs << a:rhs
+  endif
+endfunction
+
+function! MemvwrShiftRight(lhs, rhs)
+  if has('nvim')
+    let l:result    = a:lhs
+    let l:shift_amt = a:rhs
+
+    while l:shift_amt >= 8
+      let l:result    /= 256
+      let l:shift_amt -= 8
+    endwhile
+
+    while l:shift_amt > 0
+      let l:result    /= 2
+      let l:shift_amt -= 1
+    endwhile
+
+    return l:result
+  else
+    return a:lhs >> a:rhs
+  endif
+endfunction
+
+" Return 64-bit integer from any 8-byte blob (assuming Vim's 64-bit signed Number type)
+" NOTE: useful when resolving memory addresses from GDB dumps
+function! MemvwrParseUint64(blob, little_endian)
+  if len(a:blob) != 8 | return -1 | endif
+
+  let l:result = 0
+  let l:word0  = 0
+  let l:word1  = 0
+
+  " Separate into two 32-bit words
+  if a:little_endian
+    let l:word0 = or(a:blob[0], MemvwrShiftLeft(a:blob[1], 8))
+    let l:word0 = or(l:word0, MemvwrShiftLeft(a:blob[2], 16))
+    let l:word0 = or(l:word0, MemvwrShiftLeft(a:blob[3], 24))
+
+    let l:word1 = or(a:blob[4], MemvwrShiftLeft(a:blob[5], 8))
+    let l:word1 = or(l:word1, MemvwrShiftLeft(a:blob[6], 16))
+    let l:word1 = or(l:word1, MemvwrShiftLeft(a:blob[7], 24))
+
+    let l:result = or(MemvwrShiftLeft(l:word1, 32), l:word0)
+  else
+    let l:word0 = or(MemvwrShiftLeft(a:blob[0], 24), MemvwrShiftLeft(a:blob[1], 16))
+    let l:word0 = or(l:word0, MemvwrShiftLeft(a:blob[2], 8))
+    let l:word0 = or(l:word0, a:blob[3])
+
+    let l:word1 = or(MemvwrShiftLeft(a:blob[4], 24), MemvwrShiftLeft(a:blob[5], 16))
+    let l:word1 = or(l:word1, MemvwrShiftLeft(a:blob[6], 8))
+    let l:word1 = or(l:word1, a:blob[7])
+
+    let l:result = or(MemvwrShiftLeft(l:word0, 32), l:word1)
+  endif
+
+  return l:result
+endfunction
+
 
 "------------------------------
 " Temp - remove later

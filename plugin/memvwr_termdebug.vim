@@ -45,6 +45,7 @@ function! MemvwrTdbgSetView(start_addr, stop_addr)
     let l:start_addr_blob = readblob(l:temp_file_start_addr_dump)
     if empty(l:start_addr_blob)
       echomsg '[MemvwrTdbgSetView] Empty blob from readblob("' . l:temp_file_start_addr_dump . '"). Aborting...'
+      echomsg "\t GDB Command: " . l:gdb_cmd
       call delete(l:temp_file_start_addr_dump)
       return
     endif
@@ -75,6 +76,7 @@ function! MemvwrTdbgSetView(start_addr, stop_addr)
       let l:stop_addr_blob = readblob(l:temp_file_stop_addr_dump)
       if empty(l:stop_addr_blob)
         echomsg '[MemvwrTdbgSetView] Empty blob from readblob("' . l:temp_file_stop_addr_dump . '"). Aborting...'
+        echomsg "\t GDB Command: " . l:gdb_cmd
         call delete(l:temp_file_stop_addr_dump)
         return
       endif

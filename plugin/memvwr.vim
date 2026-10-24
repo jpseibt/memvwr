@@ -42,7 +42,7 @@ let g:loaded_memvwr = 1
 " [x] create memvwr from file.
 " [ ] save to file.
 " [ ] poke memory of debuggee (termdebug).
-" [ ] add more information about analysed dump: expression, timestamp, ... (termdebug).
+" [o] add more information about analysed dump: expression, timestamp, ... (termdebug).
 " [x] inspector for byte combinations (uint32_t, double, etc.), maybe with floating
 "     windows, like :Eval command from termdebug. (look into `eval()`)
 " [x] maybe an inspector field or window, if it is proven to not slow down cursor
@@ -64,6 +64,7 @@ let s:memvwr_bufnr         = 0
 let s:memvwr_winid         = 0
 let s:memvwr_blob          = 0z
 let s:memvwr_blob_len      = 0
+let s:memvwr_timestamp     = '__:__:__'
 let s:memvwr_start_addr    = 0x0
 let s:memvwr_bytes_per_row = 16
 let s:memvwr_fmt           = 'hex'
@@ -150,6 +151,8 @@ function! MemvwrGetInfo(key='all')
       let l:result = s:memvwr_fmt
     elseif a:key == 'fmt_width'
       let l:result = s:memvwr_fmt_width
+    elseif a:key == 'timestamp'
+      let l:result = s:memvwr_timestamp
     elseif a:key == 'addr_style'
       let l:result = s:memvwr_addr_style
     elseif a:key == 'addr_label_cache'
@@ -225,6 +228,7 @@ function! MemvwrGetInfo(key='all')
           \ , 'bytes_per_row': s:memvwr_bytes_per_row
           \ , 'fmt': s:memvwr_fmt
           \ , 'fmt_width': s:memvwr_fmt_width
+          \ , 'timestamp': s:memvwr_timestamp
           \ , 'addr_style': s:memvwr_addr_style
           \ , 'addr_label_cache': s:memvwr_addr_label_cache
           \ , 'header_str': s:memvwr_header_str
@@ -308,7 +312,6 @@ function! s:MemvwrOpen(mod='rightbelow')
     setlocal number
     setlocal norelativenumber
     setlocal noswapfile
-    setlocal undolevels=-1
     setlocal buftype=nofile
     setlocal signcolumn=no
     setlocal modifiable
@@ -341,7 +344,7 @@ function! s:MemvwrUpdateHeaderString()
     let l:header_str .= printf(" %*X", s:memvwr_fmt_width, l:byte_field)
   endfor
 
-  let l:header_str .= printf('  %*s', s:memvwr_bytes_per_row, 'ASCII')
+  let l:header_str .= printf('  %*s  %s', s:memvwr_bytes_per_row, 'ASCII', s:memvwr_timestamp)
 
   let s:memvwr_header_str = l:header_str
 endfunction
@@ -448,7 +451,8 @@ function! MemvwrFromBlob(blob, start_addr, bytes_per_row=16, fmt='x', addr_style
   let s:memvwr_fmt           = a:fmt
   let s:memvwr_addr_style    = a:addr_style
 
-  " Update format and header strings, and the bytes and ASCII fields start column
+  " Update timestamp, format and header strings, and the bytes and ASCII fields start column
+  let s:memvwr_timestamp = strftime("%T")
   call s:MemvwrUpdateLayout()
 
   "------------------------------
@@ -486,8 +490,8 @@ function! MemvwrFromBlob(blob, start_addr, bytes_per_row=16, fmt='x', addr_style
   endwhile
 
   " Add info line at the end
-  call add(l:mem_lines, printf("End of memory dump. START:0x%x | BYTES:%d | BPR:%d | FMT:%s | ADDR_STYLE:%s",
-                             \ s:memvwr_start_addr, s:memvwr_blob_len, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style))
+  call add(l:mem_lines, printf("End of memory dump. [%s | START:0x%x | BYTES:%d]",
+                             \ s:memvwr_timestamp, s:memvwr_start_addr, s:memvwr_blob_len))
 
   " Clear entire buffer and write l:mem_lines to it
   silent call deletebufline(s:memvwr_bufnr, 1, '$')
@@ -714,6 +718,7 @@ function! s:MemvwrWinInfoUpdate()
 
     call extend(l:lines, [
            \          '=> Layout'
+           \ , printf("  TIMESTAMP:  %s", s:memvwr_timestamp)
            \ , printf("  START:      %x", s:memvwr_start_addr)
            \ , printf("  BYTES:      %d", s:memvwr_blob_len)
            \ , printf("  BPR:        %d", s:memvwr_bytes_per_row)
@@ -791,6 +796,7 @@ function! s:MemvwrPopupOpenInfo()
 
   call extend(l:info_lines, [
          \          '=> Layout'
+         \ , printf("  TIMESTAMP:  %s", s:memvwr_timestamp)
          \ , printf("  START: %s%x", repeat(' ', l:start_addr_indent), s:memvwr_start_addr)
          \ , printf("  BYTES:      %d", s:memvwr_blob_len)
          \ , printf("  BPR:        %d", s:memvwr_bytes_per_row)
@@ -968,7 +974,7 @@ command! -nargs=1 MemvwrRefmt   call s:MemvwrOpen() | call MemvwrFromBlob(s:memv
 command! -nargs=1 MemvwrRestyle call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, s:memvwr_bytes_per_row, s:memvwr_fmt, <args>)
 command!          MemvwrDI      call s:MemvwrWinInfoOpen()
 
-command! -nargs=1 -complete=file MemvwrFopen call s:MemvwrOpen() | call MemvwrFromFile(<q-args>, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
+command! -nargs=1 -complete=file MemvwrFopen call s:MemvwrOpen() | call MemvwrFromFile(<q-args>, 0, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
 
 command! -nargs=1 ByteJump call s:MemvwrSetCursorToByte(<q-args>)
 command! -nargs=1 B        call s:MemvwrSetCursorToByte(<q-args>)

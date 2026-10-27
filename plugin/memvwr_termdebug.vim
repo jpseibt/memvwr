@@ -21,12 +21,13 @@ let g:loaded_memvwr_termdebug = 1
 " [ ] look into GDB/MI interface (https://sourceware.org/gdb/current/onlinedocs/gdb.html/GDB_002fMI.html).
 
 let s:gdb_dump_is_little_endian = 1
-let s:last_start_addr = ''
-let s:last_stop_addr  = ''
+let s:last_byte_count = 0
+let s:last_start_addr_hex_str = ''
+let s:last_stop_addr_hex_str  = ''
 
-function! MemvwrTdbgSetView(start_addr, stop_addr)
+function! MemvwrTdbgSetView(start_addr, byte_count)
   "------------------------------
-  " Normalize START address
+  " Normalize START and STOP address
   "
   let l:start_addr_value = -1
 
@@ -55,48 +56,14 @@ function! MemvwrTdbgSetView(start_addr, stop_addr)
   endif
 
   let l:start_addr_hex_str = printf("0x%x", l:start_addr_value)
-
-  "------------------------------
-  " Normalize STOP address
-  "
-  let l:stop_addr_normal = ''
-
-  if type(a:stop_addr) == v:t_string
-    if a:stop_addr[0] == '+'
-      let l:stop_addr_normal = l:start_addr_hex_str . a:stop_addr
-    elseif a:stop_addr =~? '^0x[0-9a-f]\+$'
-      let l:stop_addr_normal = a:stop_addr
-    else
-      " Evaluate stop address expression from GDB value dump
-      let l:temp_file_stop_addr_dump = tempname()
-      let l:gdb_cmd = printf("dump binary value %s (unsigned long long)%s", l:temp_file_stop_addr_dump, a:stop_addr)
-      call TermDebugSendCommand(l:gdb_cmd)
-      sleep 100m
-
-      let l:stop_addr_blob = readblob(l:temp_file_stop_addr_dump)
-      if empty(l:stop_addr_blob)
-        echomsg '[MemvwrTdbgSetView] Empty blob from readblob("' . l:temp_file_stop_addr_dump . '"). Aborting...'
-        echomsg "\t GDB Command: " . l:gdb_cmd
-        call delete(l:temp_file_stop_addr_dump)
-        return
-      endif
-
-      let l:stop_addr_value  = MemvwrParseUint64(l:stop_addr_blob, s:gdb_dump_is_little_endian)
-      let l:stop_addr_normal = printf("0x%x", l:stop_addr_value)
-      call delete(l:temp_file_stop_addr_dump)
-    endif
-  else
-    let l:stop_addr_normal = printf("0x%x", l:stop_addr)
-  endif
-
-  if empty(l:stop_addr_normal) | let l:stop_addr_normal = l:start_addr_hex_str . '+1' | endif
+  let l:stop_addr_hex_str  = printf("0x%x", l:start_addr_value + a:byte_count)
 
   "------------------------------
   " Setup Memvwr from GDB memory dump
   "
   let l:temp_file_mem_dump = tempname()
 
-  let l:gdb_cmd = printf("dump binary memory %s %s (char*)%s", l:temp_file_mem_dump, l:start_addr_hex_str, l:stop_addr_normal)
+  let l:gdb_cmd = printf("dump binary memory %s %s (char*)%s", l:temp_file_mem_dump, l:start_addr_hex_str, l:stop_addr_hex_str)
   call TermDebugSendCommand(l:gdb_cmd)
   sleep 100m
 
@@ -104,8 +71,80 @@ function! MemvwrTdbgSetView(start_addr, stop_addr)
   call MemvwrFromFile(l:temp_file_mem_dump, l:start_addr_value)
   call delete(l:temp_file_mem_dump)
 
-  let s:last_start_addr = l:start_addr_hex_str
-  let s:last_stop_addr  = l:stop_addr_normal
+  " Save it for refresh
+  let s:last_byte_count         = a:byte_count
+  let s:last_start_addr_hex_str = l:start_addr_hex_str
+  let s:last_stop_addr_hex_str  = l:stop_addr_hex_str
+endfunction
+
+"==================================================
+" Termdebug's GDB/MI Hook
+"==================================================
+" $VIMRUNTIME/pack/dist/opt/termdebug/plugin/termdebug.vim:
+" ` ...
+" #ADD
+" func TermDebugSendCommandInternal(cmd)
+"   call s:SendCommand(a:cmd)
+" endfunc
+" #END
+"
+" func TermDebugSendCommand(cmd)
+"  ...
+"
+" func s:CommOutput(job_id, msgs, event)
+"  ...
+"  elseif msg =~ '^\^done,variables='
+"  call s:HandleVariablesMsg(msg)
+" #ADD
+"  elseif msg =~ '^\^done,memory='
+"    call MemvwrTdbgGDBCommOutput(msg)
+" #END
+"  endif
+"  ... `
+"
+" Example msg_str from GDB/MI:
+"   ^done,memory=[{begin="0xbffff154",offset="0x00000000",end="0xbffff15e",contents="01000000020000000300"}]
+"
+
+" NOTE: for now, this function is only called from `termdebug.vim -> CommOutput()`
+function! MemvwrTdbgGDBCommOutput(msg_str)
+  " Parse the MI output into a dict
+  let l:dict = {}
+
+  let l:begin_idx_start = matchend(a:msg_str, 'begin="')
+  let l:begin_idx_end   = matchend(a:msg_str, '"', l:begin_idx_start) - 2
+  let l:dict['begin']   = a:msg_str[l:begin_idx_start : l:begin_idx_end]
+
+  let l:offset_idx_start = matchend(a:msg_str, 'offset="', l:begin_idx_end)
+  let l:offset_idx_end   = matchend(a:msg_str, '"', l:offset_idx_start) - 2
+  let l:dict['offset']   = a:msg_str[l:offset_idx_start : l:offset_idx_end]
+
+  let l:end_idx_start = matchend(a:msg_str, 'end="', l:offset_idx_end)
+  let l:end_idx_end   = matchend(a:msg_str, '"', l:end_idx_start) - 2
+  let l:dict['end']   = a:msg_str[l:end_idx_start : l:end_idx_end]
+
+  let l:contents_idx_start = matchend(a:msg_str, 'contents="', l:end_idx_end)
+  let l:contents_idx_end   = matchend(a:msg_str, '"', l:contents_idx_start) - 2
+  let l:dict['contents']   = a:msg_str[l:contents_idx_start : l:contents_idx_end]
+
+  let l:blob = eval('0z' . l:dict['contents'])
+  "echomsg string(l:dict)
+
+  let l:start_addr_value = str2nr(l:dict['begin'], 16)
+  let l:stop_addr_value  = str2nr(l:dict['end'], 16)
+
+  call MemvwrFromBlob(l:blob, l:start_addr_value)
+
+  " Save it for refresh
+  let s:last_byte_count         = l:stop_addr_value - l:start_addr_value
+  let s:last_start_addr_hex_str = l:dict['begin']
+  let s:last_stop_addr_hex_str  = l:dict['end']
+endfunction
+
+function! MemvwrTdbgSetViewComm(start_addr, bytes)
+  let l:gdb_cmd = printf("interpreter-exec mi \"-data-read-memory-bytes %s %d\"", a:start_addr, a:bytes)
+  call TermDebugSendCommandInternal(l:gdb_cmd)
+  " if the command succeeds, termdebug should forward the output msg from GDB/MI using MemvwrTdbgGDBCommOutput()
 endfunction
 
 " Return a string with the last visual selection or the under-the-cursor area.
@@ -131,7 +170,12 @@ endfunction
 "------------------------------
 " Commands and maps
 "
-command! -nargs=+ MemvwrTdbg        call MemvwrTdbgSetView(<f-args>)
-command! -range=0 MemvwrTdbgThis    call MemvwrTdbgSetView(s:GetVisualOrCursorArea(<range>), '+1024')
-command! -range=0 MemvwrTdbgAround  call MemvwrTdbgSetView(s:GetVisualOrCursorArea(<range>) . '-512', '+1024')
-command!          MemvwrTdbgRefresh if !empty(s:last_start_addr) | call MemvwrTdbgSetView(s:last_start_addr, s:last_stop_addr) | endif
+command! -nargs=+ MemvwrTdbg            call MemvwrTdbgSetView(<f-args>)
+command! -range=0 MemvwrTdbgThis        call MemvwrTdbgSetView(s:GetVisualOrCursorArea(<range>), '1024')
+command! -range=0 MemvwrTdbgAround      call MemvwrTdbgSetView(s:GetVisualOrCursorArea(<range>) . '-512', '1024')
+command!          MemvwrTdbgRefresh     if !empty(s:last_start_addr_hex_str) | call MemvwrTdbgSetView(s:last_start_addr_hex_str, s:last_byte_count) | endif
+
+command! -nargs=+ MemvwrTdbgComm        call MemvwrTdbgSetViewComm(<f-args>)
+command! -range=0 MemvwrTdbgCommThis    call MemvwrTdbgSetViewComm(s:GetVisualOrCursorArea(<range>), '1024')
+command! -range=0 MemvwrTdbgCommAround  call MemvwrTdbgSetViewComm(s:GetVisualOrCursorArea(<range>) . '-512', '1024')
+command!          MemvwrTdbgCommRefresh if !empty(s:last_start_addr_hex_str) | call MemvwrTdbgSetViewComm(s:last_start_addr_hex_str, s:last_byte_count) | endif

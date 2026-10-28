@@ -1,9 +1,14 @@
 # Memvwr
 
-**[WIP]** A memory / hex viewer window for Vim and Neovim. 
+**[WIP]** A binary blob viewer and memory inspector for Vim/Neovim and GDB/termdebug.
 
-The goal is to make a `raddbg`-style memory visualization for `termdebug` sessions. Currently supports cursor tracking, hex/oct/dec/bin representations, and integer extraction (8/16/32-bit inspector).
-Future scope includes hex-editing manipulation.
+The goal is to make a `raddbg`-style memory visualization for `termdebug` sessions. Currently supports cursor tracking, hex/oct/dec/bin representations, and integer and floating-point extraction (8/16/32/64-bit inspector).
+Future scope includes better termdebug and GDB/MI integration, and hex-editing manipulation.
 
-### Preview video link:
-[![Preview](https://github.com/user-attachments/assets/9f641036-1dfd-4cf9-8c24-92151a78424f)](https://youtu.be/xZfepTfVTWo)
+### Demo video:
+https://youtu.be/dHHUmu6k9HE
+
+![memvwr_demo_raw_bin](https://github.com/user-attachments/assets/c6c453db-b27f-4f49-a904-904dd48ec82d)
+
+
+

@@ -11,7 +11,6 @@ let g:loaded_memvwr_termdebug = 1
 " Memvwr integration with termdebug
 "============================================================
 "TODO notes:
-" [ ] remove `sleep` calls (maybe GDB/MI solve this).
 " [x] add cursor area evaluation.
 " [ ] add hotkeys with `setup/teardown` approach.
 "  ^- NOTE: maybe it could be an option like `g:termdebug_config['map_K']`.
@@ -25,7 +24,8 @@ let s:last_byte_count = 0
 let s:last_start_addr_hex_str = ''
 let s:last_stop_addr_hex_str  = ''
 
-function! MemvwrTdbgSetView(start_addr, byte_count)
+" Uses GDB's `dump binary ...` and read it from disk
+function! s:MemvwrTdbgSetView(start_addr, byte_count)
   "------------------------------
   " Normalize START and STOP address
   "
@@ -41,11 +41,19 @@ function! MemvwrTdbgSetView(start_addr, byte_count)
     let l:temp_file_start_addr_dump = tempname()
     let l:gdb_cmd = printf("dump binary value %s (unsigned long long)%s", l:temp_file_start_addr_dump, a:start_addr)
     call TermDebugSendCommand(l:gdb_cmd)
-    sleep 100m
 
+    " Try to read binary dump file written by GDB
+    let l:counter     = 0
+    let l:counter_max = 10
+    while getfsize(l:temp_file_start_addr_dump) <= 0 && l:counter < l:counter_max
+      let l:counter += 1
+      sleep 10
+    endwhile
+
+    sleep 10
     let l:start_addr_blob = readblob(l:temp_file_start_addr_dump)
     if empty(l:start_addr_blob)
-      echomsg '[MemvwrTdbgSetView] Empty blob from readblob("' . l:temp_file_start_addr_dump . '"). Aborting...'
+      echomsg '[s:MemvwrTdbgSetView] Empty blob from readblob("' . l:temp_file_start_addr_dump . '"). Aborting...'
       echomsg "\t GDB Command: " . l:gdb_cmd
       call delete(l:temp_file_start_addr_dump)
       return
@@ -62,13 +70,27 @@ function! MemvwrTdbgSetView(start_addr, byte_count)
   " Setup Memvwr from GDB memory dump
   "
   let l:temp_file_mem_dump = tempname()
-
   let l:gdb_cmd = printf("dump binary memory %s %s (char*)%s", l:temp_file_mem_dump, l:start_addr_hex_str, l:stop_addr_hex_str)
   call TermDebugSendCommand(l:gdb_cmd)
-  sleep 100m
 
-  execute 'Memvwr'
-  call MemvwrFromFile(l:temp_file_mem_dump, l:start_addr_value)
+   " Try to read binary dump file written by GDB
+  let l:counter     = 0
+  let l:counter_max = 10
+  while getfsize(l:temp_file_mem_dump) <= 0 && l:counter < l:counter_max
+    let l:counter += 1
+    sleep 10
+  endwhile
+
+  sleep 10
+  let l:mem_blob = readblob(l:temp_file_mem_dump)
+  if empty(l:mem_blob)
+    echomsg '[s:MemvwrTdbgSetView] Empty blob from readblob("' . l:temp_file_mem_dump . '"). Aborting...'
+    echomsg "\t GDB Command: " . l:gdb_cmd
+    call delete(l:temp_file_mem_dump)
+    return
+  endif
+
+  call MemvwrFromBlob(l:temp_file_mem_dump, l:start_addr_value)
   call delete(l:temp_file_mem_dump)
 
   " Save it for refresh
@@ -141,11 +163,59 @@ function! MemvwrTdbgGDBCommOutput(msg_str)
   let s:last_stop_addr_hex_str  = l:dict['end']
 endfunction
 
-function! MemvwrTdbgSetViewComm(start_addr, bytes)
+function! s:MemvwrTdbgSetViewComm(start_addr, bytes)
   let l:gdb_cmd = printf("interpreter-exec mi \"-data-read-memory-bytes %s %d\"", a:start_addr, a:bytes)
   call TermDebugSendCommandInternal(l:gdb_cmd)
   " if the command succeeds, termdebug should forward the output msg from GDB/MI using MemvwrTdbgGDBCommOutput()
 endfunction
+
+
+"------------------------------
+" Commands and maps
+"
+function! s:MemvwrTdbgSetup()
+  command! -nargs=+ MemvwrTdbg            call s:MemvwrTdbgSetView(<f-args>)
+  command! -range=0 MemvwrTdbgThis        call s:MemvwrTdbgSetView(s:GetVisualOrCursorArea(<range>), '1024')
+  command! -range=0 MemvwrTdbgAround      call s:MemvwrTdbgSetView(s:GetVisualOrCursorArea(<range>) . '-512', '1024')
+  command!          MemvwrTdbgRefresh     if !empty(s:last_start_addr_hex_str) | call s:MemvwrTdbgSetView(s:last_start_addr_hex_str, s:last_byte_count) | endif
+
+  " Check if it is possible to hook into the termdebug GDB/MI communication setup
+  if exists('*TermDebugSendCommandInternal')
+    command! -nargs=+ MemvwrTdbgComm        call s:MemvwrTdbgSetViewComm(<f-args>)
+    command! -range=0 MemvwrTdbgCommThis    call s:MemvwrTdbgSetViewComm(s:GetVisualOrCursorArea(<range>), '1024')
+    command! -range=0 MemvwrTdbgCommAround  call s:MemvwrTdbgSetViewComm(s:GetVisualOrCursorArea(<range>) . '-512', '1024')
+    command!          MemvwrTdbgCommRefresh if !empty(s:last_start_addr_hex_str) | call s:MemvwrTdbgSetViewComm(s:last_start_addr_hex_str, s:last_byte_count) | endif
+  endif
+
+  if exists('#User#MemvwrTdbgSetup')
+    doautocmd <nomodeline> User MemvwrTdbgSetup
+  endif
+endfunction
+
+function! s:MemvwrTdbgTearDown()
+  delcommand MemvwrTdbg
+  delcommand MemvwrTdbgThis
+  delcommand MemvwrTdbgAround
+  delcommand MemvwrTdbgRefresh
+
+  if exists(':MemvwrTdbgComm')
+    delcommand MemvwrTdbgComm
+    delcommand MemvwrTdbgCommThis
+    delcommand MemvwrTdbgCommAround
+    delcommand MemvwrTdbgCommRefresh
+  endif
+
+  if exists('#User#MemvwrTdbgTearDown')
+    doautocmd <nomodeline> User MemvwrTdbgTearDown
+  endif
+endfunction
+
+augroup MemvwrTdbgAUG
+  autocmd!
+  autocmd User TermdebugStartPost call s:MemvwrTdbgSetup()
+  autocmd User TermdebugStopPre   call s:MemvwrTdbgTearDown()
+augroup END
+
 
 " Return a string with the last visual selection or the under-the-cursor area.
 " Example command using <range> to dynamically pass an expression to a function:
@@ -166,16 +236,3 @@ function! s:GetVisualOrCursorArea(range)
   endif
   return tr(l:area, "\n", ' ')
 endfunction
-
-"------------------------------
-" Commands and maps
-"
-command! -nargs=+ MemvwrTdbg            call MemvwrTdbgSetView(<f-args>)
-command! -range=0 MemvwrTdbgThis        call MemvwrTdbgSetView(s:GetVisualOrCursorArea(<range>), '1024')
-command! -range=0 MemvwrTdbgAround      call MemvwrTdbgSetView(s:GetVisualOrCursorArea(<range>) . '-512', '1024')
-command!          MemvwrTdbgRefresh     if !empty(s:last_start_addr_hex_str) | call MemvwrTdbgSetView(s:last_start_addr_hex_str, s:last_byte_count) | endif
-
-command! -nargs=+ MemvwrTdbgComm        call MemvwrTdbgSetViewComm(<f-args>)
-command! -range=0 MemvwrTdbgCommThis    call MemvwrTdbgSetViewComm(s:GetVisualOrCursorArea(<range>), '1024')
-command! -range=0 MemvwrTdbgCommAround  call MemvwrTdbgSetViewComm(s:GetVisualOrCursorArea(<range>) . '-512', '1024')
-command!          MemvwrTdbgCommRefresh if !empty(s:last_start_addr_hex_str) | call MemvwrTdbgSetViewComm(s:last_start_addr_hex_str, s:last_byte_count) | endif

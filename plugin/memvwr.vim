@@ -467,7 +467,7 @@ function! MemvwrFromBlob(blob, start_addr, bytes_per_row=16, fmt='x', addr_style
 
     let j = 0
     while j < s:memvwr_bytes_per_row
-      if j + i < s:memvwr_blob_len
+      if (j + i) < s:memvwr_blob_len
         let l:byte_val    = s:memvwr_blob[i+j]
         let l:bytes_str .= printf(' ' . s:memvwr_format_str_bytes, l:byte_val)
 

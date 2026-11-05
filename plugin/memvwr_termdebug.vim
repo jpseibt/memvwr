@@ -20,6 +20,8 @@ let g:loaded_memvwr_termdebug = 1
 " [ ] look into GDB/MI interface (https://sourceware.org/gdb/current/onlinedocs/gdb.html/GDB_002fMI.html).
 
 let s:gdb_dump_is_little_endian = 1
+let s:set_cursor_to_blob_idx = -1
+
 let s:last_byte_count = 0
 let s:last_start_addr_hex_str = ''
 let s:last_stop_addr_hex_str  = ''
@@ -97,7 +99,13 @@ function! s:MemvwrTdbgSetView(start_addr, byte_count)
   let s:last_byte_count         = a:byte_count
   let s:last_start_addr_hex_str = l:start_addr_hex_str
   let s:last_stop_addr_hex_str  = l:stop_addr_hex_str
+
+  if s:set_cursor_to_blob_idx >= 0
+    call MemvwrSetCursorToByte(s:set_cursor_to_blob_idx)
+    let s:set_cursor_to_blob_idx = -1
+  endif
 endfunction
+
 
 "==================================================
 " Termdebug's GDB/MI Hook
@@ -161,6 +169,11 @@ function! MemvwrTdbgGDBCommOutput(msg_str)
   let s:last_byte_count         = l:stop_addr_value - l:start_addr_value
   let s:last_start_addr_hex_str = l:dict['begin']
   let s:last_stop_addr_hex_str  = l:dict['end']
+
+  if s:set_cursor_to_blob_idx >= 0
+    call MemvwrSetCursorToByte(s:set_cursor_to_blob_idx)
+    let s:set_cursor_to_blob_idx = -1
+  endif
 endfunction
 
 function! s:MemvwrTdbgSetViewComm(start_addr, bytes)
@@ -173,18 +186,29 @@ endfunction
 "------------------------------
 " Commands and maps
 "
+function! s:MemvwrTdbgRefresh(use_gdb_comm)
+  if empty(s:last_start_addr_hex_str) | return | endif
+  let l:keep_curr_winid = win_getid()
+  if !a:use_gdb_comm
+    call s:MemvwrTdbgSetView(s:last_start_addr_hex_str, s:last_byte_count)
+  else
+    call s:MemvwrTdbgSetViewComm(s:last_start_addr_hex_str, s:last_byte_count)
+  endif
+  call MemvwrRestoreLastValidCursor(l:keep_curr_winid)
+endfunction
+
 function! s:MemvwrTdbgSetup()
-  command! -nargs=+ MemvwrTdbg            call s:MemvwrTdbgSetView(<f-args>)
-  command! -range=0 MemvwrTdbgThis        call s:MemvwrTdbgSetView(s:GetVisualOrCursorArea(<range>), '1024')
-  command! -range=0 MemvwrTdbgAround      call s:MemvwrTdbgSetView(s:GetVisualOrCursorArea(<range>) . '-512', '1024')
-  command!          MemvwrTdbgRefresh     if !empty(s:last_start_addr_hex_str) | call s:MemvwrTdbgSetView(s:last_start_addr_hex_str, s:last_byte_count) | endif
+  command! -nargs=+ MemvwrTdbg        let s:set_cursor_to_blob_idx = 0   | call s:MemvwrTdbgSetView(<f-args>)
+  command! -range=0 MemvwrTdbgThis    let s:set_cursor_to_blob_idx = 0   | call s:MemvwrTdbgSetView(s:GetVisualOrCursorArea(<range>), '1024')
+  command! -range=0 MemvwrTdbgAround  let s:set_cursor_to_blob_idx = 512 | call s:MemvwrTdbgSetView(s:GetVisualOrCursorArea(<range>) . '-512', '1024')
+  command!          MemvwrTdbgRefresh let s:set_cursor_to_blob_idx = -1  | call s:MemvwrTdbgRefresh(0)
 
   " Check if it is possible to hook into the termdebug GDB/MI communication setup
   if exists('*TermDebugSendCommandInternal')
-    command! -nargs=+ MemvwrTdbgComm        call s:MemvwrTdbgSetViewComm(<f-args>)
-    command! -range=0 MemvwrTdbgCommThis    call s:MemvwrTdbgSetViewComm(s:GetVisualOrCursorArea(<range>), '1024')
-    command! -range=0 MemvwrTdbgCommAround  call s:MemvwrTdbgSetViewComm(s:GetVisualOrCursorArea(<range>) . '-512', '1024')
-    command!          MemvwrTdbgCommRefresh if !empty(s:last_start_addr_hex_str) | call s:MemvwrTdbgSetViewComm(s:last_start_addr_hex_str, s:last_byte_count) | endif
+    command! -nargs=+ MemvwrTdbgComm        let s:set_cursor_to_blob_idx = 0   | call s:MemvwrTdbgSetViewComm(<f-args>) 
+    command! -range=0 MemvwrTdbgCommThis    let s:set_cursor_to_blob_idx = 0   | call s:MemvwrTdbgSetViewComm(s:GetVisualOrCursorArea(<range>), '1024') 
+    command! -range=0 MemvwrTdbgCommAround  let s:set_cursor_to_blob_idx = 512 | call s:MemvwrTdbgSetViewComm(s:GetVisualOrCursorArea(<range>) . '-512', '1024') 
+    command!          MemvwrTdbgCommRefresh let s:set_cursor_to_blob_idx = -1  | call s:MemvwrTdbgRefresh(1)
   endif
 
   if exists('#User#MemvwrTdbgSetup')

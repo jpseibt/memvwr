@@ -37,7 +37,7 @@ let g:loaded_memvwr = 1
 "       is guaranteeing that the syntax highlighting would work as expected.
 "    -> It would be nice to update or highlight only bytes that changed from a
 "       previous visualization (step). Even crazier, diffing two views, or whatever.
-" [ ] reformat commands should save the cursor location (byte number under cursor)
+" [x] reformat commands should save the cursor location (byte number under cursor)
 " [ ] edit values, both from bytes field or ascii preview.
 " [x] create memvwr from file.
 " [ ] save to file.
@@ -98,6 +98,8 @@ let s:memvwr_cursor_blob_idx  = -1
 let s:memvwr_cursor_match_col = -1
 let s:memvwr_cursor_match_len = -1
 
+let s:memvwr_last_valid_cursor_blob_idx = 0
+
 "------------------------------
 " Data visualization & Pop-up Windows
 "
@@ -125,180 +127,6 @@ let s:f64_exponent = 0
 let s:f64_mantissa = 0
 let s:f64_type     = '_' " [Normal, Infinity, NaN, Zero, Subnormal]
 
-" Return a dictionary containing all state and config variables, similar
-" to `getwininfo()`, or return them individually.
-" NOTE: The returned dictionary is a new allocation, but s:memvwr_blob
-"       is passed by reference in both cases. See `:help blob-modification`
-function! MemvwrGetInfo(key='all')
-  let l:result = {}
-
-  if a:key != 'all'
-    if a:key == 'name'
-      let l:result = s:memvwr_name
-    elseif a:key == 'bufnr'
-      let l:result = s:memvwr_bufnr
-    elseif a:key == 'winid'
-      let l:result = s:memvwr_winid
-    elseif a:key == 'blob'
-      let l:result = s:memvwr_blob
-    elseif a:key == 'blob_len'
-      let l:result = s:memvwr_blob_len
-    elseif a:key == 'start_addr'
-      let l:result = s:memvwr_start_addr
-    elseif a:key == 'bytes_per_row'
-      let l:result = s:memvwr_bytes_per_row
-    elseif a:key == 'fmt'
-      let l:result = s:memvwr_fmt
-    elseif a:key == 'fmt_width'
-      let l:result = s:memvwr_fmt_width
-    elseif a:key == 'timestamp'
-      let l:result = s:memvwr_timestamp
-    elseif a:key == 'addr_style'
-      let l:result = s:memvwr_addr_style
-    elseif a:key == 'addr_label_cache'
-      let l:result = s:memvwr_addr_label_cache
-    elseif a:key == 'header_str'
-      let l:result = s:memvwr_header_str
-    elseif a:key == 'column_bytes'
-      let l:result = s:memvwr_column_bytes
-    elseif a:key == 'column_ascii'
-      let l:result = s:memvwr_column_ascii
-    elseif a:key == 'format_str_addr'
-      let l:result = s:memvwr_format_str_addr
-    elseif a:key == 'format_str_bytes'
-      let l:result = s:memvwr_format_str_bytes
-    elseif a:key == 'cursor_line'
-      let l:result = s:memvwr_cursor_line
-    elseif a:key == 'cursor_col'
-      let l:result = s:memvwr_cursor_col
-    elseif a:key == 'cursor_is_valid'
-      let l:result = s:memvwr_cursor_is_valid
-    elseif a:key == 'cursor_blob_idx'
-      let l:result = s:memvwr_cursor_blob_idx
-    elseif a:key == 'cursor_match_col'
-      let l:result = s:memvwr_cursor_match_col
-    elseif a:key == 'cursor_match_len'
-      let l:result = s:memvwr_cursor_match_len
-    elseif a:key == 'is_little_endian'
-      let l:result = s:memvwr_is_little_endian
-    elseif a:key == 'win_info_name'
-      let l:result = s:memvwr_win_info_name
-    elseif a:key == 'win_info_bufnr'
-      let l:result = s:memvwr_win_info_bufnr
-    elseif a:key == 'win_info_winid'
-      let l:result = s:memvwr_win_info_winid
-    elseif a:key == 'popup_info_name'
-      let l:result = s:memvwr_popup_info_name
-    elseif a:key == 'popup_info_bufnr'
-      let l:result = s:memvwr_popup_info_bufnr
-    elseif a:key == 'popup_info_winid'
-      let l:result = s:memvwr_popup_info_winid
-    elseif a:key == 'popup_inspector_name'
-      let l:result = s:memvwr_popup_inspector_name
-    elseif a:key == 'popup_inspector_bufnr'
-      let l:result = s:memvwr_popup_inspector_bufnr
-    elseif a:key == 'f32_sign'
-      let l:result = s:f32_sign
-    elseif a:key == 'f32_exponent'
-      let l:result = s:f32_exponent
-    elseif a:key == 'f32_mantissa'
-      let l:result = s:f32_mantissa
-    elseif a:key == 'f32_type'
-      let l:result = s:f32_type
-    elseif a:key == 'f64_sign'
-      let l:result = s:f64_sign
-    elseif a:key == 'f64_exponent'
-      let l:result = s:f64_exponent
-    elseif a:key == 'f64_mantissa'
-      let l:result = s:f64_mantissa
-    elseif a:key == 'f64_type'
-      let l:result = s:f64_type
-    else
-      echomsg '[MemvwrGetInfo] Invalid key argument "' . a:key . '".'
-    endif
-
-  else
-    let l:result = {
-          \   'name': s:memvwr_name
-          \ , 'bufnr': s:memvwr_bufnr
-          \ , 'winid': s:memvwr_winid
-          \ , 'blob': s:memvwr_blob
-          \ , 'blob_len': s:memvwr_blob_len
-          \ , 'start_addr': s:memvwr_start_addr
-          \ , 'bytes_per_row': s:memvwr_bytes_per_row
-          \ , 'fmt': s:memvwr_fmt
-          \ , 'fmt_width': s:memvwr_fmt_width
-          \ , 'timestamp': s:memvwr_timestamp
-          \ , 'addr_style': s:memvwr_addr_style
-          \ , 'addr_label_cache': s:memvwr_addr_label_cache
-          \ , 'header_str': s:memvwr_header_str
-          \ , 'column_bytes': s:memvwr_column_bytes
-          \ , 'column_ascii': s:memvwr_column_ascii
-          \ , 'format_str_addr': s:memvwr_format_str_addr
-          \ , 'format_str_bytes': s:memvwr_format_str_bytes
-          \ , 'cursor_line': s:memvwr_cursor_line
-          \ , 'cursor_col': s:memvwr_cursor_col
-          \ , 'cursor_is_valid': s:memvwr_cursor_is_valid
-          \ , 'cursor_blob_idx': s:memvwr_cursor_blob_idx
-          \ , 'cursor_match_col': s:memvwr_cursor_match_col
-          \ , 'cursor_match_len': s:memvwr_cursor_match_len
-          \ , 'is_little_endian': s:memvwr_is_little_endian
-          \ , 'win_info_name': s:memvwr_win_info_name
-          \ , 'win_info_bufnr': s:memvwr_win_info_bufnr
-          \ , 'win_info_winid': s:memvwr_win_info_winid
-          \ , 'popup_info_name': s:memvwr_popup_info_name
-          \ , 'popup_info_bufnr': s:memvwr_popup_info_bufnr
-          \ , 'popup_info_winid': s:memvwr_popup_info_winid
-          \ , 'popup_inspector_name': s:memvwr_popup_inspector_name
-          \ , 'popup_inspector_bufnr': s:memvwr_popup_inspector_bufnr
-          \ , 'popup_inspector_winid': s:memvwr_popup_inspector_winid
-          \ , 'f32_sign': s:f32_sign
-          \ , 'f32_exponent': s:f32_exponent
-          \ , 'f32_mantissa': s:f32_mantissa
-          \ , 'f32_type': s:f32_type
-          \ , 'f64_sign': s:f64_sign
-          \ , 'f64_exponent': s:f64_exponent
-          \ , 'f64_mantissa': s:f64_mantissa
-          \ , 'f64_type': s:f64_type
-          \ }
-  endif
-
-  return l:result
-endfunction
-
-" Return blob index for a byte and coordinates in a list [blob_idx, line, bytes col, ascii col]
-" Modes:
-"   0: Absolute | byte at blob index N (0 is the first byte)
-"   1: Relative | offset N bytes from current byte under cursor (supports negative N)
-"   2: Row Byte | row byte N of the cursor line (0 to bytes_per_row - 1)
-function! MemvwrGetByteInfo(number, mode=0)
-  let l:result = []
-  let l:blob_idx = -1
-
-  if a:mode == 0
-    let l:blob_idx = a:number
-
-  elseif win_getid() == s:memvwr_winid
-    if a:mode == 1 && s:memvwr_cursor_is_valid
-      let l:blob_idx = s:memvwr_cursor_blob_idx + a:number
-
-    elseif a:mode == 2 && a:number >= 0 && a:number < s:memvwr_bytes_per_row
-      let l:blob_idx = (s:memvwr_cursor_line - 1) * s:memvwr_bytes_per_row + a:number
-
-    endif
-  endif
-
-  if l:blob_idx >= 0 && l:blob_idx < s:memvwr_blob_len
-    let l:line = l:blob_idx / s:memvwr_bytes_per_row + 1
-    let l:row_byte_number = l:blob_idx % s:memvwr_bytes_per_row
-
-    let l:bytes_col = s:memvwr_column_bytes + l:row_byte_number * (s:memvwr_fmt_width + 1)
-    let l:ascii_col = s:memvwr_column_ascii + l:row_byte_number
-    let l:result = [l:blob_idx, l:line, l:bytes_col, l:ascii_col]
-  endif
-
-  return l:result
-endfunction
 
 " Create and setup buffer/window variables, or goto Memvwr window
 function! s:MemvwrOpen(mod='rightbelow')
@@ -384,7 +212,7 @@ function! s:MemvwrUpdateLayout()
   elseif s:memvwr_addr_style == 1
     let l:addr_format_str = '%016x:'
   else " style 2 or 3
-    let l:len_stop_addr  = strlen(printf("%x", s:memvwr_start_addr + s:memvwr_blob_len))
+    let l:len_stop_addr = strlen(printf("%x", s:memvwr_start_addr + s:memvwr_blob_len))
     if s:memvwr_addr_style == 2
       if l:len_stop_addr < 2 | let l:len_stop_addr = 2 | endif
       let l:addr_format_str = '0x'
@@ -436,77 +264,6 @@ function! s:MemvwrUpdateLayout()
   call s:MemvwrUpdateHeaderString()
 endfunction
 
-function! MemvwrFromBlob(blob, start_addr, bytes_per_row=16, fmt='x', addr_style=0)
-  let l:blob_len = len(a:blob)
-  if l:blob_len < 1 || type(a:blob) != v:t_blob
-    echomsg '[MemvwrFromBlob] Invalid blob argument. Aborting...'
-    return
-  endif
-
-  " Save (and normalize) arguments
-  let s:memvwr_blob          = a:blob
-  let s:memvwr_blob_len      = l:blob_len
-  let s:memvwr_start_addr    = a:start_addr
-  let s:memvwr_bytes_per_row = (a:bytes_per_row > 0) ? a:bytes_per_row : 1
-  let s:memvwr_fmt           = a:fmt
-  let s:memvwr_addr_style    = a:addr_style
-
-  " Update timestamp, format and header strings, and the bytes and ASCII fields start column
-  let s:memvwr_timestamp = strftime("%T")
-  call s:MemvwrUpdateLayout()
-
-  "------------------------------
-  " Generate rows iterating over blob
-  " (byte index = i + j).
-  "
-  let l:mem_lines  = []
-  let i = 0
-  while i < s:memvwr_blob_len
-    let l:bytes_str = ''
-    let l:ascii_str  = ''
-
-    let j = 0
-    while j < s:memvwr_bytes_per_row
-      if (j + i) < s:memvwr_blob_len
-        let l:byte_val    = s:memvwr_blob[i+j]
-        let l:bytes_str .= printf(' ' . s:memvwr_format_str_bytes, l:byte_val)
-
-        if l:byte_val >= 33 && l:byte_val <= 126
-          let l:ascii_str .= nr2char(l:byte_val)
-        else
-          let l:ascii_str .= '.'
-        endif
-      else
-        " Pad with spaces
-        let l:bytes_str .= printf(" %*s", s:memvwr_fmt_width, ' ')
-        let l:ascii_str .= ' '
-      endif
-      let j += 1
-    endwhile
-
-    " Append row to lines list: [address:][ bytes]  [ASCII]
-    call add(l:mem_lines, printf(s:memvwr_format_str_addr . "%s  %s", s:memvwr_start_addr+i, l:bytes_str, l:ascii_str))
-    let i += j
-  endwhile
-
-  " Add info line at the end
-  call add(l:mem_lines, printf("End of memory dump. [%s | START:0x%x | BYTES:%d]",
-                             \ s:memvwr_timestamp, s:memvwr_start_addr, s:memvwr_blob_len))
-
-  " Clear entire buffer and write l:mem_lines to it
-  silent call deletebufline(s:memvwr_bufnr, 1, '$')
-  call setbufline(s:memvwr_bufnr, 1, l:mem_lines)
-endfunction
-
-function! MemvwrFromFile(fname, start_addr=0, bytes_per_row=16, fmt='x', addr_style=0)
-  let l:blob = readblob(a:fname)
-  if empty(l:blob)
-    echomsg '[MemvwrFromFile] Empty blob from readblob("' . a:fname . '"). Aborting...'
-    return
-  endif
-  call MemvwrFromBlob(l:blob, a:start_addr, a:bytes_per_row, a:fmt, a:addr_style)
-endfunction
-
 
 "============================================================
 " UI & Dynamic state
@@ -551,6 +308,7 @@ function! s:MemvwrUpdateCursorState()
           let s:memvwr_cursor_blob_idx  = l:blob_idx
           let s:memvwr_cursor_match_col = s:memvwr_column_ascii + l:row_byte_number
           let s:memvwr_cursor_match_len = 1
+          let s:memvwr_last_valid_cursor_blob_idx = l:blob_idx
         endif
       endif
     else
@@ -562,15 +320,18 @@ function! s:MemvwrUpdateCursorState()
         let s:memvwr_cursor_blob_idx  = l:blob_idx
         let s:memvwr_cursor_match_col = s:memvwr_column_bytes + l:row_byte_number * l:fmt_width_plus_sep
         let s:memvwr_cursor_match_len = s:memvwr_fmt_width
+        let s:memvwr_last_valid_cursor_blob_idx = l:blob_idx
       endif
     endif
   endif
 endfunction
 
+" Hightlight current cursor column and match columns
 " NOTE: see `:help matchaddpos()`
 function! s:MemvwrCursorMatchByteAndASCII()
   call clearmatches()
   if s:memvwr_cursor_is_valid
+    call matchaddpos('MatchParen', [[s:memvwr_cursor_line, s:memvwr_cursor_col, 1]])
     call matchaddpos('MatchParen', [[s:memvwr_cursor_line, s:memvwr_cursor_match_col, s:memvwr_cursor_match_len]])
   endif
 endfunction
@@ -579,36 +340,6 @@ function! s:MemvwrSetCursorToMatch()
   if win_getid() == s:memvwr_winid && s:memvwr_cursor_is_valid
     call cursor(s:memvwr_cursor_line, s:memvwr_cursor_match_col)
   endif
-endfunction
-
-function! s:MemvwrSetCursorToByte(cmd_str)
-  if empty(a:cmd_str) || !win_gotoid(s:memvwr_winid) | return | endif
-
-  let l:mode    = 0
-  let l:sign    = 1
-  let l:num_str = a:cmd_str
-
-  if a:cmd_str[0] == '+' || a:cmd_str[0] == '-'
-    let l:mode    = 1
-    let l:sign    = (a:cmd_str[0] == '-') ? -1 : 1
-    let l:num_str = a:cmd_str[1:]
-  elseif a:cmd_str[0] == '|'
-    let l:mode   = 2
-    let l:num_str = a:cmd_str[1:]
-  endif
-
-  let l:base = 10
-  if strlen(l:num_str) > 1 && l:num_str[0] == '0'
-    let l:ch = l:num_str[1]
-    let l:base = (l:ch ==? 'x') ? 16
-             \ : (l:ch ==? 'b') ? 2
-             \ :                  8
-  endif
-
-  let l:number = str2nr(l:num_str, l:base) * l:sign
-
-  let l:byte_info = MemvwrGetByteInfo(l:number, l:mode)
-  if !empty(l:byte_info) | call cursor(l:byte_info[1], l:byte_info[2]) | endif
 endfunction
 
 
@@ -961,39 +692,6 @@ function! s:MemvwrPopupInspectorUpdate()
 endfunction
 
 
-"------------------------------
-" Commands and maps
-"
-command! -nargs=? Memvwr        call s:MemvwrOpen(<q-args>)
-command!          MemvwrReset   call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr)
-command!          MemvwrRegen   call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
-command! -nargs=1 MemvwrReblob  call s:MemvwrOpen() | call MemvwrFromBlob(<args>, s:memvwr_start_addr, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
-command! -nargs=1 MemvwrReaddr  call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_blob, <args>, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
-command! -nargs=1 MemvwrRebpr   call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, <args>, s:memvwr_fmt, s:memvwr_addr_style)
-command! -nargs=1 MemvwrRefmt   call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, s:memvwr_bytes_per_row, <q-args>, s:memvwr_addr_style)
-command! -nargs=1 MemvwrRestyle call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, s:memvwr_bytes_per_row, s:memvwr_fmt, <args>)
-command!          MemvwrDI      call s:MemvwrWinInfoOpen()
-
-command! -nargs=1 -complete=file MemvwrFopen call s:MemvwrOpen() | call MemvwrFromFile(<q-args>, 0, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
-
-command! -nargs=1 ByteJump call s:MemvwrSetCursorToByte(<q-args>)
-command! -nargs=1 B        call s:MemvwrSetCursorToByte(<q-args>)
-
-command! MemvwrPopinfo            call s:MemvwrPopupOpenInfo()
-command! MemvwrPopinspectorToggle call s:MemvwrPopupInspectorToggle()
-command! MemvwrSwapEndianness     let s:memvwr_is_little_endian = (s:memvwr_is_little_endian) ? 0 : 1 | call s:MemvwrUIUpdate()
-
-augroup MemvwrAUG
-  autocmd!
-  autocmd FileType memvwr autocmd CursorMoved <buffer> call s:MemvwrUIUpdate()
-  autocmd FileType memvwr nnoremap   <silent> <buffer> % :call <SID>MemvwrSetCursorToMatch()<CR>
-  autocmd FileType memvwr nnoremap   <silent> <buffer> I :MemvwrPopinfo<CR>
-  autocmd FileType memvwr nnoremap   <silent> <buffer> i :MemvwrPopinspectorToggle<CR>
-  autocmd FileType memvwr nnoremap   <silent> <buffer> K :MemvwrDI<CR>
-  autocmd FileType memvwr nnoremap   <silent> <buffer> S :MemvwrSwapEndianness<CR>
-augroup END
-
-
 "============================================================
 " Utils
 "============================================================
@@ -1246,132 +944,51 @@ function! s:MemvwrStateStr()
   let l:lines = []
 
   call extend(l:lines, [
-         \   printf("%-*s", 32, 's:memvwr_name:')                  . s:memvwr_name
-         \ , printf("%-*s", 32, 's:memvwr_bufnr:')                 . s:memvwr_bufnr
-         \ , printf("%-*s", 32, 's:memvwr_winid:')                 . s:memvwr_winid
-         \ , printf("%-*s", 32, 's:memvwr_blob:')                  . string(s:memvwr_blob)
-         \ , printf("%-*s", 32, 's:memvwr_blob_len:')              . s:memvwr_blob_len
-         \ , printf("%-*s", 32, 's:memvwr_start_addr:')            . s:memvwr_start_addr
-         \ , printf("%-*s", 32, 's:memvwr_bytes_per_row:')         . s:memvwr_bytes_per_row
-         \ , printf("%-*s", 32, 's:memvwr_fmt:')                   . s:memvwr_fmt
-         \ , printf("%-*s", 32, 's:memvwr_fmt_width:')             . s:memvwr_fmt_width
-         \ , printf("%-*s", 32, 's:memvwr_addr_style:')            . s:memvwr_addr_style
-         \ , printf("%-*s", 32, 's:memvwr_header_str:')            . s:memvwr_header_str
-         \ , printf("%-*s", 32, 's:memvwr_addr_label_cache:')      . s:memvwr_addr_label_cache
-         \ , printf("%-*s", 32, 's:memvwr_column_bytes:')          . s:memvwr_column_bytes
-         \ , printf("%-*s", 32, 's:memvwr_column_ascii:')          . s:memvwr_column_ascii
-         \ , printf("%-*s", 32, 's:memvwr_format_str_addr:')       . s:memvwr_format_str_addr
-         \ , printf("%-*s", 32, 's:memvwr_format_str_bytes:')      . s:memvwr_format_str_bytes
-         \ , printf("%-*s", 32, 's:memvwr_cursor_line:')           . s:memvwr_cursor_line
-         \ , printf("%-*s", 32, 's:memvwr_cursor_col:')            . s:memvwr_cursor_col
-         \ , printf("%-*s", 32, 's:memvwr_cursor_is_valid:')       . s:memvwr_cursor_is_valid
-         \ , printf("%-*s", 32, 's:memvwr_cursor_blob_idx:')       . s:memvwr_cursor_blob_idx
-         \ , printf("%-*s", 32, 's:memvwr_cursor_match_col:')      . s:memvwr_cursor_match_col
-         \ , printf("%-*s", 32, 's:memvwr_cursor_match_len:')      . s:memvwr_cursor_match_len
-         \ , printf("%-*s", 32, 's:memvwr_is_little_endian:')      . s:memvwr_is_little_endian
-         \ , printf("%-*s", 32, 's:memvwr_win_info_name:')         . s:memvwr_win_info_name
-         \ , printf("%-*s", 32, 's:memvwr_win_info_bufnr:')        . s:memvwr_win_info_bufnr
-         \ , printf("%-*s", 32, 's:memvwr_win_info_winid:')        . s:memvwr_win_info_winid
-         \ , printf("%-*s", 32, 's:memvwr_popup_info_name:')       . s:memvwr_popup_info_name
-         \ , printf("%-*s", 32, 's:memvwr_popup_info_bufnr:')      . s:memvwr_popup_info_bufnr
-         \ , printf("%-*s", 32, 's:memvwr_popup_info_winid:')      . s:memvwr_popup_info_winid
-         \ , printf("%-*s", 32, 's:memvwr_popup_inspector_name:')  . s:memvwr_popup_inspector_name
-         \ , printf("%-*s", 32, 's:memvwr_popup_inspector_bufnr:') . s:memvwr_popup_inspector_bufnr
-         \ , printf("%-*s", 32, 's:memvwr_popup_inspector_winid:') . s:memvwr_popup_inspector_winid
-         \ , printf("%-*s", 32, 's:f32_sign:')                     . s:f32_sign
-         \ , printf("%-*s", 32, 's:f32_exponent:')                 . s:f32_exponent
-         \ , printf("%-*s", 32, 's:f32_mantissa:')                 . s:f32_mantissa
-         \ , printf("%-*s", 32, 's:f32_type:')                     . s:f32_type
-         \ , printf("%-*s", 32, 's:f64_sign:')                     . s:f64_sign
-         \ , printf("%-*s", 32, 's:f64_exponent:')                 . s:f64_exponent
-         \ , printf("%-*s", 32, 's:f64_mantissa:')                 . s:f64_mantissa
-         \ , printf("%-*s", 32, 's:f64_type:')                     . s:f64_type
+         \   printf("%-*s", 32, 's:memvwr_name:')                       . s:memvwr_name
+         \ , printf("%-*s", 32, 's:memvwr_bufnr:')                      . s:memvwr_bufnr
+         \ , printf("%-*s", 32, 's:memvwr_winid:')                      . s:memvwr_winid
+         \ , printf("%-*s", 32, 's:memvwr_blob:')                       . string(s:memvwr_blob)
+         \ , printf("%-*s", 32, 's:memvwr_blob_len:')                   . s:memvwr_blob_len
+         \ , printf("%-*s", 32, 's:memvwr_start_addr:')                 . s:memvwr_start_addr
+         \ , printf("%-*s", 32, 's:memvwr_bytes_per_row:')              . s:memvwr_bytes_per_row
+         \ , printf("%-*s", 32, 's:memvwr_fmt:')                        . s:memvwr_fmt
+         \ , printf("%-*s", 32, 's:memvwr_fmt_width:')                  . s:memvwr_fmt_width
+         \ , printf("%-*s", 32, 's:memvwr_addr_style:')                 . s:memvwr_addr_style
+         \ , printf("%-*s", 32, 's:memvwr_header_str:')                 . s:memvwr_header_str
+         \ , printf("%-*s", 32, 's:memvwr_addr_label_cache:')           . s:memvwr_addr_label_cache
+         \ , printf("%-*s", 32, 's:memvwr_column_bytes:')               . s:memvwr_column_bytes
+         \ , printf("%-*s", 32, 's:memvwr_column_ascii:')               . s:memvwr_column_ascii
+         \ , printf("%-*s", 32, 's:memvwr_format_str_addr:')            . s:memvwr_format_str_addr
+         \ , printf("%-*s", 32, 's:memvwr_format_str_bytes:')           . s:memvwr_format_str_bytes
+         \ , printf("%-*s", 32, 's:memvwr_cursor_line:')                . s:memvwr_cursor_line
+         \ , printf("%-*s", 32, 's:memvwr_cursor_col:')                 . s:memvwr_cursor_col
+         \ , printf("%-*s", 32, 's:memvwr_cursor_is_valid:')            . s:memvwr_cursor_is_valid
+         \ , printf("%-*s", 32, 's:memvwr_cursor_blob_idx:')            . s:memvwr_cursor_blob_idx
+         \ , printf("%-*s", 32, 's:memvwr_cursor_match_col:')           . s:memvwr_cursor_match_col
+         \ , printf("%-*s", 32, 's:memvwr_cursor_match_len:')           . s:memvwr_cursor_match_len
+         \ , printf("%-*s", 32, 's:memvwr_last_valid_cursor_blob_idx:') . s:memvwr_last_valid_cursor_blob_idx
+         \ , printf("%-*s", 32, 's:memvwr_is_little_endian:')           . s:memvwr_is_little_endian
+         \ , printf("%-*s", 32, 's:memvwr_win_info_name:')              . s:memvwr_win_info_name
+         \ , printf("%-*s", 32, 's:memvwr_win_info_bufnr:')             . s:memvwr_win_info_bufnr
+         \ , printf("%-*s", 32, 's:memvwr_win_info_winid:')             . s:memvwr_win_info_winid
+         \ , printf("%-*s", 32, 's:memvwr_popup_info_name:')            . s:memvwr_popup_info_name
+         \ , printf("%-*s", 32, 's:memvwr_popup_info_bufnr:')           . s:memvwr_popup_info_bufnr
+         \ , printf("%-*s", 32, 's:memvwr_popup_info_winid:')           . s:memvwr_popup_info_winid
+         \ , printf("%-*s", 32, 's:memvwr_popup_inspector_name:')       . s:memvwr_popup_inspector_name
+         \ , printf("%-*s", 32, 's:memvwr_popup_inspector_bufnr:')      . s:memvwr_popup_inspector_bufnr
+         \ , printf("%-*s", 32, 's:memvwr_popup_inspector_winid:')      . s:memvwr_popup_inspector_winid
+         \ , printf("%-*s", 32, 's:f32_sign:')                          . s:f32_sign
+         \ , printf("%-*s", 32, 's:f32_exponent:')                      . s:f32_exponent
+         \ , printf("%-*s", 32, 's:f32_mantissa:')                      . s:f32_mantissa
+         \ , printf("%-*s", 32, 's:f32_type:')                          . s:f32_type
+         \ , printf("%-*s", 32, 's:f64_sign:')                          . s:f64_sign
+         \ , printf("%-*s", 32, 's:f64_exponent:')                      . s:f64_exponent
+         \ , printf("%-*s", 32, 's:f64_mantissa:')                      . s:f64_mantissa
+         \ , printf("%-*s", 32, 's:f64_type:')                          . s:f64_type
          \ ])
 
   return l:lines
 endfunction
-
-"------------------------------
-" Bit-shift ops & Global functions
-"
-function! MemvwrShiftLeft(lhs, rhs)
-  " NOTE: can't use bit shifts on Neovim. Using 256 multiplier instead.
-  if has('nvim')
-    let l:result    = a:lhs
-    let l:shift_amt = a:rhs
-
-    while l:shift_amt >= 8
-      let l:result    *= 256
-      let l:shift_amt -= 8
-    endwhile
-
-    while l:shift_amt > 0
-      let l:result    *= 2
-      let l:shift_amt -= 1
-    endwhile
-
-    return l:result
-  else
-    return a:lhs << a:rhs
-  endif
-endfunction
-
-function! MemvwrShiftRight(lhs, rhs)
-  if has('nvim')
-    let l:result    = a:lhs
-    let l:shift_amt = a:rhs
-
-    while l:shift_amt >= 8
-      let l:result    /= 256
-      let l:shift_amt -= 8
-    endwhile
-
-    while l:shift_amt > 0
-      let l:result    /= 2
-      let l:shift_amt -= 1
-    endwhile
-
-    return l:result
-  else
-    return a:lhs >> a:rhs
-  endif
-endfunction
-
-" Return 64-bit integer from any 8-byte blob (assuming Vim's 64-bit signed Number type)
-" NOTE: useful when resolving memory addresses from GDB dumps
-function! MemvwrParseUint64(blob, little_endian)
-  if len(a:blob) != 8 | return -1 | endif
-
-  let l:result = 0
-  let l:word0  = 0
-  let l:word1  = 0
-
-  " Separate into two 32-bit words
-  if a:little_endian
-    let l:word0 = or(a:blob[0], MemvwrShiftLeft(a:blob[1], 8))
-    let l:word0 = or(l:word0, MemvwrShiftLeft(a:blob[2], 16))
-    let l:word0 = or(l:word0, MemvwrShiftLeft(a:blob[3], 24))
-
-    let l:word1 = or(a:blob[4], MemvwrShiftLeft(a:blob[5], 8))
-    let l:word1 = or(l:word1, MemvwrShiftLeft(a:blob[6], 16))
-    let l:word1 = or(l:word1, MemvwrShiftLeft(a:blob[7], 24))
-
-    let l:result = or(MemvwrShiftLeft(l:word1, 32), l:word0)
-  else
-    let l:word0 = or(MemvwrShiftLeft(a:blob[0], 24), MemvwrShiftLeft(a:blob[1], 16))
-    let l:word0 = or(l:word0, MemvwrShiftLeft(a:blob[2], 8))
-    let l:word0 = or(l:word0, a:blob[3])
-
-    let l:word1 = or(MemvwrShiftLeft(a:blob[4], 24), MemvwrShiftLeft(a:blob[5], 16))
-    let l:word1 = or(l:word1, MemvwrShiftLeft(a:blob[6], 8))
-    let l:word1 = or(l:word1, a:blob[7])
-
-    let l:result = or(MemvwrShiftLeft(l:word0, 32), l:word1)
-  endif
-
-  return l:result
-endfunction
-
 
 "------------------------------
 " Temp - remove later
@@ -1455,3 +1072,437 @@ command! MemvwrTest call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_test_blob
 " 76     | -Infinity            | 0xFFF00000 00000000 | '-'  | 0x7FF    | 0x0000000000000
 " 84     | NaN                  | 0x7FF80000 00000000 | '+'  | 0x7FF    | 0x8000000000000
 " 92     | Pi Approx (+3.14159) | 0x400921FB 54442D18 | '+'  | 0x400    | 0x921FB54442D18
+
+
+"============================================================
+" Global interface & Bit-shift ops
+"============================================================
+function! MemvwrFromBlob(blob, start_addr, bytes_per_row=16, fmt='x', addr_style=0)
+  let l:blob_len = len(a:blob)
+  if l:blob_len < 1 || type(a:blob) != v:t_blob
+    echomsg '[MemvwrFromBlob] Invalid blob argument. Aborting...'
+    return
+  endif
+
+  " Save (and normalize) arguments
+  let s:memvwr_blob          = a:blob
+  let s:memvwr_blob_len      = l:blob_len
+  let s:memvwr_start_addr    = a:start_addr
+  let s:memvwr_bytes_per_row = (a:bytes_per_row > 0) ? a:bytes_per_row : 1
+  let s:memvwr_fmt           = a:fmt
+  let s:memvwr_addr_style    = a:addr_style
+
+  " Update timestamp, format and header strings, and the bytes and ASCII fields start column
+  let s:memvwr_timestamp = strftime("%T")
+  call s:MemvwrUpdateLayout()
+
+  "------------------------------
+  " Generate rows iterating over blob
+  " (byte index = i + j).
+  "
+  let l:mem_lines = []
+  let i = 0
+  while i < s:memvwr_blob_len
+    let l:bytes_str = ''
+    let l:ascii_str = ''
+
+    let j = 0
+    while j < s:memvwr_bytes_per_row
+      if (j + i) < s:memvwr_blob_len
+        let l:byte_val   = s:memvwr_blob[i+j]
+        let l:bytes_str .= printf(' ' . s:memvwr_format_str_bytes, l:byte_val)
+
+        if l:byte_val >= 33 && l:byte_val <= 126
+          let l:ascii_str .= nr2char(l:byte_val)
+        else
+          let l:ascii_str .= '.'
+        endif
+      else
+        " Pad with spaces
+        let l:bytes_str .= printf(" %*s", s:memvwr_fmt_width, ' ')
+        let l:ascii_str .= ' '
+      endif
+      let j += 1
+    endwhile
+
+    " Append row to lines list: [address:][ bytes]  [ASCII]
+    call add(l:mem_lines, printf(s:memvwr_format_str_addr . "%s  %s", s:memvwr_start_addr+i, l:bytes_str, l:ascii_str))
+    let i += j
+  endwhile
+
+  " Add info line at the end
+  call add(l:mem_lines, printf("End of memory dump. [%s | START:0x%x | BYTES:%d]",
+                             \ s:memvwr_timestamp, s:memvwr_start_addr, s:memvwr_blob_len))
+
+  " Clear entire buffer and write l:mem_lines to it
+  silent call deletebufline(s:memvwr_bufnr, 1, '$')
+  call setbufline(s:memvwr_bufnr, 1, l:mem_lines)
+endfunction
+
+function! MemvwrFromFile(fname, start_addr=0, bytes_per_row=16, fmt='x', addr_style=0)
+  let l:blob = readblob(a:fname)
+  if empty(l:blob)
+    echomsg '[MemvwrFromFile] Empty blob from readblob("' . a:fname . '"). Aborting...'
+    return
+  endif
+  call MemvwrFromBlob(l:blob, a:start_addr, a:bytes_per_row, a:fmt, a:addr_style)
+endfunction
+
+" Return a dictionary containing all state and config variables, similar
+" to `getwininfo()`, or return them individually.
+" NOTE: The returned dictionary is a new allocation, but s:memvwr_blob
+"       is passed by reference in both cases. See `:help blob-modification`
+function! MemvwrGetInfo(key='all')
+  let l:result = {}
+
+  if a:key != 'all'
+    if a:key == 'name'
+      let l:result = s:memvwr_name
+    elseif a:key == 'bufnr'
+      let l:result = s:memvwr_bufnr
+    elseif a:key == 'winid'
+      let l:result = s:memvwr_winid
+    elseif a:key == 'blob'
+      let l:result = s:memvwr_blob
+    elseif a:key == 'blob_len'
+      let l:result = s:memvwr_blob_len
+    elseif a:key == 'start_addr'
+      let l:result = s:memvwr_start_addr
+    elseif a:key == 'bytes_per_row'
+      let l:result = s:memvwr_bytes_per_row
+    elseif a:key == 'fmt'
+      let l:result = s:memvwr_fmt
+    elseif a:key == 'fmt_width'
+      let l:result = s:memvwr_fmt_width
+    elseif a:key == 'timestamp'
+      let l:result = s:memvwr_timestamp
+    elseif a:key == 'addr_style'
+      let l:result = s:memvwr_addr_style
+    elseif a:key == 'addr_label_cache'
+      let l:result = s:memvwr_addr_label_cache
+    elseif a:key == 'header_str'
+      let l:result = s:memvwr_header_str
+    elseif a:key == 'column_bytes'
+      let l:result = s:memvwr_column_bytes
+    elseif a:key == 'column_ascii'
+      let l:result = s:memvwr_column_ascii
+    elseif a:key == 'format_str_addr'
+      let l:result = s:memvwr_format_str_addr
+    elseif a:key == 'format_str_bytes'
+      let l:result = s:memvwr_format_str_bytes
+    elseif a:key == 'cursor_line'
+      let l:result = s:memvwr_cursor_line
+    elseif a:key == 'cursor_col'
+      let l:result = s:memvwr_cursor_col
+    elseif a:key == 'cursor_is_valid'
+      let l:result = s:memvwr_cursor_is_valid
+    elseif a:key == 'cursor_blob_idx'
+      let l:result = s:memvwr_cursor_blob_idx
+    elseif a:key == 'cursor_match_col'
+      let l:result = s:memvwr_cursor_match_col
+    elseif a:key == 'cursor_match_len'
+      let l:result = s:memvwr_cursor_match_len
+    elseif a:key == 'last_valid_cursor_blob_idx'
+      let l:result = s:memvwr_last_valid_cursor_blob_idx
+    elseif a:key == 'is_little_endian'
+      let l:result = s:memvwr_is_little_endian
+    elseif a:key == 'win_info_name'
+      let l:result = s:memvwr_win_info_name
+    elseif a:key == 'win_info_bufnr'
+      let l:result = s:memvwr_win_info_bufnr
+    elseif a:key == 'win_info_winid'
+      let l:result = s:memvwr_win_info_winid
+    elseif a:key == 'popup_info_name'
+      let l:result = s:memvwr_popup_info_name
+    elseif a:key == 'popup_info_bufnr'
+      let l:result = s:memvwr_popup_info_bufnr
+    elseif a:key == 'popup_info_winid'
+      let l:result = s:memvwr_popup_info_winid
+    elseif a:key == 'popup_inspector_name'
+      let l:result = s:memvwr_popup_inspector_name
+    elseif a:key == 'popup_inspector_bufnr'
+      let l:result = s:memvwr_popup_inspector_bufnr
+    elseif a:key == 'f32_sign'
+      let l:result = s:f32_sign
+    elseif a:key == 'f32_exponent'
+      let l:result = s:f32_exponent
+    elseif a:key == 'f32_mantissa'
+      let l:result = s:f32_mantissa
+    elseif a:key == 'f32_type'
+      let l:result = s:f32_type
+    elseif a:key == 'f64_sign'
+      let l:result = s:f64_sign
+    elseif a:key == 'f64_exponent'
+      let l:result = s:f64_exponent
+    elseif a:key == 'f64_mantissa'
+      let l:result = s:f64_mantissa
+    elseif a:key == 'f64_type'
+      let l:result = s:f64_type
+    else
+      echomsg '[MemvwrGetInfo] Invalid key argument "' . a:key . '".'
+    endif
+
+  else
+    let l:result = {
+          \   'name': s:memvwr_name
+          \ , 'bufnr': s:memvwr_bufnr
+          \ , 'winid': s:memvwr_winid
+          \ , 'blob': s:memvwr_blob
+          \ , 'blob_len': s:memvwr_blob_len
+          \ , 'start_addr': s:memvwr_start_addr
+          \ , 'bytes_per_row': s:memvwr_bytes_per_row
+          \ , 'fmt': s:memvwr_fmt
+          \ , 'fmt_width': s:memvwr_fmt_width
+          \ , 'timestamp': s:memvwr_timestamp
+          \ , 'addr_style': s:memvwr_addr_style
+          \ , 'addr_label_cache': s:memvwr_addr_label_cache
+          \ , 'header_str': s:memvwr_header_str
+          \ , 'column_bytes': s:memvwr_column_bytes
+          \ , 'column_ascii': s:memvwr_column_ascii
+          \ , 'format_str_addr': s:memvwr_format_str_addr
+          \ , 'format_str_bytes': s:memvwr_format_str_bytes
+          \ , 'cursor_line': s:memvwr_cursor_line
+          \ , 'cursor_col': s:memvwr_cursor_col
+          \ , 'cursor_is_valid': s:memvwr_cursor_is_valid
+          \ , 'cursor_blob_idx': s:memvwr_cursor_blob_idx
+          \ , 'cursor_match_col': s:memvwr_cursor_match_col
+          \ , 'cursor_match_len': s:memvwr_cursor_match_len
+          \ , 'last_valid_cursor_blob_idx': s:memvwr_last_valid_cursor_blob_idx
+          \ , 'is_little_endian': s:memvwr_is_little_endian
+          \ , 'win_info_name': s:memvwr_win_info_name
+          \ , 'win_info_bufnr': s:memvwr_win_info_bufnr
+          \ , 'win_info_winid': s:memvwr_win_info_winid
+          \ , 'popup_info_name': s:memvwr_popup_info_name
+          \ , 'popup_info_bufnr': s:memvwr_popup_info_bufnr
+          \ , 'popup_info_winid': s:memvwr_popup_info_winid
+          \ , 'popup_inspector_name': s:memvwr_popup_inspector_name
+          \ , 'popup_inspector_bufnr': s:memvwr_popup_inspector_bufnr
+          \ , 'popup_inspector_winid': s:memvwr_popup_inspector_winid
+          \ , 'f32_sign': s:f32_sign
+          \ , 'f32_exponent': s:f32_exponent
+          \ , 'f32_mantissa': s:f32_mantissa
+          \ , 'f32_type': s:f32_type
+          \ , 'f64_sign': s:f64_sign
+          \ , 'f64_exponent': s:f64_exponent
+          \ , 'f64_mantissa': s:f64_mantissa
+          \ , 'f64_type': s:f64_type
+          \ }
+  endif
+
+  return l:result
+endfunction
+
+" Return blob index for a byte and coordinates in a list [blob_idx, line, bytes col, ascii col]
+" Modes:
+"   0: Absolute | byte at blob index N (0 is the first byte)
+"   1: Relative | offset N bytes from current byte under cursor (supports negative N)
+"   2: Row Byte | row byte N of the cursor line (0 to bytes_per_row - 1)
+function! MemvwrGetByteInfo(number, mode=0)
+  let l:result = []
+  let l:blob_idx = -1
+
+  if a:mode == 0
+    let l:blob_idx = a:number
+
+  elseif win_getid() == s:memvwr_winid
+    if a:mode == 1 && s:memvwr_cursor_is_valid
+      let l:blob_idx = s:memvwr_cursor_blob_idx + a:number
+
+    elseif a:mode == 2 && a:number >= 0 && a:number < s:memvwr_bytes_per_row
+      let l:blob_idx = (s:memvwr_cursor_line - 1) * s:memvwr_bytes_per_row + a:number
+
+    endif
+  endif
+
+  if l:blob_idx >= 0 && l:blob_idx < s:memvwr_blob_len
+    let l:line = l:blob_idx / s:memvwr_bytes_per_row + 1
+    let l:row_byte_number = l:blob_idx % s:memvwr_bytes_per_row
+
+    let l:bytes_col = s:memvwr_column_bytes + l:row_byte_number * (s:memvwr_fmt_width + 1)
+    let l:ascii_col = s:memvwr_column_ascii + l:row_byte_number
+    let l:result = [l:blob_idx, l:line, l:bytes_col, l:ascii_col]
+  endif
+
+  return l:result
+endfunction
+
+function! MemvwrSetCursorToByte(cmd)
+  let l:cmd_str = type(a:cmd) == v:t_string ? a:cmd : string(a:cmd)
+  if empty(l:cmd_str) || !win_gotoid(s:memvwr_winid) | return | endif
+
+  let l:mode    = 0
+  let l:sign    = 1
+  let l:num_str = l:cmd_str
+
+  if l:cmd_str[0] == '+' || l:cmd_str[0] == '-'
+    let l:mode    = 1
+    let l:sign    = (l:cmd_str[0] == '-') ? -1 : 1
+    let l:num_str = l:cmd_str[1:]
+  elseif l:cmd_str[0] == '|'
+    let l:mode    = 2
+    let l:num_str = l:cmd_str[1:]
+  endif
+
+  let l:base = 10
+  if strlen(l:num_str) > 1 && l:num_str[0] == '0'
+    let l:ch = l:num_str[1]
+    let l:base = (l:ch ==? 'x') ? 16
+             \ : (l:ch ==? 'b') ? 2
+             \ :                  8
+  endif
+
+  let l:number = str2nr(l:num_str, l:base) * l:sign
+
+  let l:byte_info = MemvwrGetByteInfo(l:number, l:mode)
+  if !empty(l:byte_info)
+    call cursor(l:byte_info[1], l:byte_info[2])
+  else
+    echomsg '[MemvwrSetCursorToByte] Invalid argument command: ' . a:cmd
+  endif
+endfunction
+
+" Restore the cursor elements to the last valid byte index and force an UI update.
+function! MemvwrRestoreLastValidCursor(goto_winid=0)
+  call MemvwrSetCursorToByte(s:memvwr_last_valid_cursor_blob_idx)
+  call s:MemvwrUIUpdate()
+  if a:goto_winid != s:memvwr_winid && a:goto_winid != 0
+    call win_gotoid(a:goto_winid)
+  endif
+endfunction
+
+function! MemvwrShiftLeft(lhs, rhs)
+  " NOTE: can't use bit shifts on Neovim. Using 256 multiplier instead.
+  if has('nvim')
+    let l:result    = a:lhs
+    let l:shift_amt = a:rhs
+
+    while l:shift_amt >= 8
+      let l:result    *= 256
+      let l:shift_amt -= 8
+    endwhile
+
+    while l:shift_amt > 0
+      let l:result    *= 2
+      let l:shift_amt -= 1
+    endwhile
+
+    return l:result
+  else
+    return a:lhs << a:rhs
+  endif
+endfunction
+
+function! MemvwrShiftRight(lhs, rhs)
+  if has('nvim')
+    let l:result    = a:lhs
+    let l:shift_amt = a:rhs
+
+    while l:shift_amt >= 8
+      let l:result    /= 256
+      let l:shift_amt -= 8
+    endwhile
+
+    while l:shift_amt > 0
+      let l:result    /= 2
+      let l:shift_amt -= 1
+    endwhile
+
+    return l:result
+  else
+    return a:lhs >> a:rhs
+  endif
+endfunction
+
+" Return 64-bit integer from any 8-byte blob (assuming Vim's 64-bit signed Number type)
+" NOTE: useful when resolving memory addresses from GDB dumps
+function! MemvwrParseUint64(blob, little_endian)
+  if len(a:blob) != 8 | return -1 | endif
+
+  let l:result = 0
+  let l:word0  = 0
+  let l:word1  = 0
+
+  " Separate into two 32-bit words
+  if a:little_endian
+    let l:word0 = or(a:blob[0], MemvwrShiftLeft(a:blob[1], 8))
+    let l:word0 = or(l:word0, MemvwrShiftLeft(a:blob[2], 16))
+    let l:word0 = or(l:word0, MemvwrShiftLeft(a:blob[3], 24))
+
+    let l:word1 = or(a:blob[4], MemvwrShiftLeft(a:blob[5], 8))
+    let l:word1 = or(l:word1, MemvwrShiftLeft(a:blob[6], 16))
+    let l:word1 = or(l:word1, MemvwrShiftLeft(a:blob[7], 24))
+
+    let l:result = or(MemvwrShiftLeft(l:word1, 32), l:word0)
+  else
+    let l:word0 = or(MemvwrShiftLeft(a:blob[0], 24), MemvwrShiftLeft(a:blob[1], 16))
+    let l:word0 = or(l:word0, MemvwrShiftLeft(a:blob[2], 8))
+    let l:word0 = or(l:word0, a:blob[3])
+
+    let l:word1 = or(MemvwrShiftLeft(a:blob[4], 24), MemvwrShiftLeft(a:blob[5], 16))
+    let l:word1 = or(l:word1, MemvwrShiftLeft(a:blob[6], 8))
+    let l:word1 = or(l:word1, a:blob[7])
+
+    let l:result = or(MemvwrShiftLeft(l:word0, 32), l:word1)
+  endif
+
+  return l:result
+endfunction
+
+
+"------------------------------
+" Commands and maps
+"
+function! s:MemvwrRe(cmd_str, arg='')
+  let l:curr_winid = win_getid()
+  call s:MemvwrOpen()
+
+  if a:cmd_str == 'reset'
+    call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr)
+  elseif a:cmd_str == 'regen'
+    call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
+  elseif a:cmd_str == 'blob'
+    call MemvwrFromBlob(a:arg, s:memvwr_start_addr, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
+  elseif a:cmd_str == 'start_addr'
+    call MemvwrFromBlob(s:memvwr_blob, a:arg, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
+  elseif a:cmd_str == 'bytes_per_row'
+    call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, a:arg, s:memvwr_fmt, s:memvwr_addr_style)
+  elseif a:cmd_str == 'fmt'
+    call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, s:memvwr_bytes_per_row, a:arg, s:memvwr_addr_style)
+  elseif a:cmd_str == 'addr_style'
+    call MemvwrFromBlob(s:memvwr_blob, s:memvwr_start_addr, s:memvwr_bytes_per_row, s:memvwr_fmt, a:arg)
+  else
+    echomsg '[s:MemvwrRe] Invalid command "' . a:cmd_str . '"'
+    return
+  endif
+
+  call MemvwrRestoreLastValidCursor(l:curr_winid)
+endfunction
+
+command! -nargs=? Memvwr        call s:MemvwrOpen(<q-args>)
+command!          MemvwrReset   call s:MemvwrRe('reset')
+command!          MemvwrRegen   call s:MemvwrRe('regen')
+command! -nargs=1 MemvwrReblob  call s:MemvwrRe('blob', <args>)
+command! -nargs=1 MemvwrReaddr  call s:MemvwrRe('start_addr', <args>)
+command! -nargs=1 MemvwrRebpr   call s:MemvwrRe('bytes_per_row', <args>)
+command! -nargs=1 MemvwrRefmt   call s:MemvwrRe('fmt', <q-args>)
+command! -nargs=1 MemvwrRestyle call s:MemvwrRe('addr_style', <args>)
+command!          MemvwrDI      call s:MemvwrWinInfoOpen()
+
+command! -nargs=1 -complete=file MemvwrFopen call s:MemvwrOpen() | call MemvwrFromFile(<q-args>, 0, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
+
+command! -nargs=1 ByteJump call MemvwrSetCursorToByte(<q-args>)
+command! -nargs=1 B        call MemvwrSetCursorToByte(<q-args>)
+
+command! MemvwrPopinfo            call s:MemvwrPopupOpenInfo()
+command! MemvwrPopinspectorToggle call s:MemvwrPopupInspectorToggle()
+command! MemvwrSwapEndianness     let s:memvwr_is_little_endian = (s:memvwr_is_little_endian) ? 0 : 1 | call s:MemvwrUIUpdate()
+
+augroup MemvwrAUG
+  autocmd!
+  autocmd FileType memvwr autocmd CursorMoved <buffer> call s:MemvwrUIUpdate()
+  autocmd FileType memvwr nnoremap   <silent> <buffer> % :call <SID>MemvwrSetCursorToMatch()<CR>
+  autocmd FileType memvwr nnoremap   <silent> <buffer> I :MemvwrPopinfo<CR>
+  autocmd FileType memvwr nnoremap   <silent> <buffer> i :MemvwrPopinspectorToggle<CR>
+  autocmd FileType memvwr nnoremap   <silent> <buffer> K :MemvwrDI<CR>
+  autocmd FileType memvwr nnoremap   <silent> <buffer> S :MemvwrSwapEndianness<CR>
+augroup END

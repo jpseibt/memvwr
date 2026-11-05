@@ -47,10 +47,10 @@ function! s:MemvwrTdbgSetView(start_addr, byte_count)
     let l:counter_max = 10
     while getfsize(l:temp_file_start_addr_dump) <= 0 && l:counter < l:counter_max
       let l:counter += 1
-      sleep 10
+      sleep 10m
     endwhile
 
-    sleep 10
+    sleep 10m
     let l:start_addr_blob = readblob(l:temp_file_start_addr_dump)
     if empty(l:start_addr_blob)
       echomsg '[s:MemvwrTdbgSetView] Empty blob from readblob("' . l:temp_file_start_addr_dump . '"). Aborting...'
@@ -70,7 +70,7 @@ function! s:MemvwrTdbgSetView(start_addr, byte_count)
   " Setup Memvwr from GDB memory dump
   "
   let l:temp_file_mem_dump = tempname()
-  let l:gdb_cmd = printf("dump binary memory %s %s (char*)%s", l:temp_file_mem_dump, l:start_addr_hex_str, l:stop_addr_hex_str)
+  let l:gdb_cmd = printf("dump binary memory %s (char*)%s (char*)%s", l:temp_file_mem_dump, l:start_addr_hex_str, l:stop_addr_hex_str)
   call TermDebugSendCommand(l:gdb_cmd)
 
    " Try to read binary dump file written by GDB
@@ -78,10 +78,10 @@ function! s:MemvwrTdbgSetView(start_addr, byte_count)
   let l:counter_max = 10
   while getfsize(l:temp_file_mem_dump) <= 0 && l:counter < l:counter_max
     let l:counter += 1
-    sleep 10
+    sleep 10m
   endwhile
 
-  sleep 10
+  sleep 10m
   let l:mem_blob = readblob(l:temp_file_mem_dump)
   if empty(l:mem_blob)
     echomsg '[s:MemvwrTdbgSetView] Empty blob from readblob("' . l:temp_file_mem_dump . '"). Aborting...'
@@ -89,9 +89,9 @@ function! s:MemvwrTdbgSetView(start_addr, byte_count)
     call delete(l:temp_file_mem_dump)
     return
   endif
-
-  call MemvwrFromBlob(l:temp_file_mem_dump, l:start_addr_value)
   call delete(l:temp_file_mem_dump)
+
+  call MemvwrFromBlob(l:mem_blob, l:start_addr_value)
 
   " Save it for refresh
   let s:last_byte_count         = a:byte_count

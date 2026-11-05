@@ -438,8 +438,8 @@ endfunction
 
 function! MemvwrFromBlob(blob, start_addr, bytes_per_row=16, fmt='x', addr_style=0)
   let l:blob_len = len(a:blob)
-  if l:blob_len < 1
-    echomsg '[MemvwrFromBlob] Empty blob argument. Aborting...'
+  if l:blob_len < 1 || type(a:blob) != v:t_blob
+    echomsg '[MemvwrFromBlob] Invalid blob argument. Aborting...'
     return
   endif
 

@@ -38,7 +38,7 @@ let g:loaded_memvwr = 1
 "    -> It would be nice to update or highlight only bytes that changed from a
 "       previous visualization (step). Even crazier, diffing two views, or whatever.
 " [x] reformat commands should save the cursor location (byte number under cursor)
-" [ ] edit values, both from bytes field or ascii preview.
+" [o] edit values, both from bytes field or ascii preview.
 " [x] create memvwr from file.
 " [ ] save to file.
 " [ ] poke memory of debuggee (termdebug).
@@ -1075,6 +1075,49 @@ command! MemvwrTest call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_test_blob
 
 
 "============================================================
+" Editing the blob
+"============================================================
+function! s:MemvwrWriteByte(idx, value)
+  let l:byte_idx  = type(a:idx)   == v:t_number ? a:idx   : str2nr(a:idx)
+  let l:value_str = type(a:value) == v:t_string ? a:value : string(a:value)
+  let l:value_num = MemvwrStr2Nr(l:value_str)
+
+  if l:byte_idx < 0 || l:byte_idx >= s:memvwr_blob_len
+    echomsg '[s:MemvwrWriteByte] Invalid byte index argument (a:idx=' . a:idx . '). Aborting...'
+    return
+  endif
+
+  if l:value_num < 0 || l:value_num > 255
+    echomsg '[s:MemvwrWriteByte] Invalid value argument (a:value=' . a:value . '). Aborting...'
+    return
+  endif
+
+  let s:memvwr_blob[l:byte_idx] = l:value_num
+
+  let l:byte_str = printf(s:memvwr_format_str_bytes, l:value_num)
+  let l:ascii_str = (l:value_num >= 33 && l:value_num <= 126) ? nr2char(l:value_num) : '.'
+
+  " info list = [blob_idx, line, bytes col, ascii col]
+  " NOTE: columns start at col 1, so -1 for using them as string indexes:
+  let l:byte_info = MemvwrGetByteInfo(l:byte_idx)
+  let l:line      = l:byte_info[1]
+  let l:bytes_col = l:byte_info[2] - 1
+  let l:ascii_col = l:byte_info[3] - 1
+  let l:byte_line_str = getbufoneline(s:memvwr_bufnr, l:line)
+
+  " Edit the line string replacing the old value and ASCII byte representation with the new one
+  let l:new_byte_line_str  = slice(l:byte_line_str, 0, l:bytes_col)
+  let l:new_byte_line_str .= l:byte_str . ' '
+  let l:new_byte_line_str .= slice(l:byte_line_str, l:bytes_col + s:memvwr_fmt_width + 1, l:ascii_col)
+  let l:new_byte_line_str .= l:ascii_str
+  let l:new_byte_line_str .= slice(l:byte_line_str, l:ascii_col + 1)
+
+  call setbufline(s:memvwr_bufnr, l:line, l:new_byte_line_str)
+  call s:MemvwrUIUpdate()
+endfunction
+
+
+"============================================================
 " Global interface & Bit-shift ops
 "============================================================
 function! MemvwrFromBlob(blob, start_addr, bytes_per_row=16, fmt='x', addr_style=0)
@@ -1295,7 +1338,7 @@ endfunction
 " Return blob index for a byte and coordinates in a list [blob_idx, line, bytes col, ascii col]
 " Modes:
 "   0: Absolute | byte at blob index N (0 is the first byte)
-"   1: Relative | offset N bytes from current byte under cursor (supports negative N)
+"   1: Relative | offset N bytes from current or last valid byte under cursor (supports negative N)
 "   2: Row Byte | row byte N of the cursor line (0 to bytes_per_row - 1)
 function! MemvwrGetByteInfo(number, mode=0)
   let l:result = []
@@ -1304,14 +1347,11 @@ function! MemvwrGetByteInfo(number, mode=0)
   if a:mode == 0
     let l:blob_idx = a:number
 
-  elseif win_getid() == s:memvwr_winid
-    if a:mode == 1 && s:memvwr_cursor_is_valid
-      let l:blob_idx = s:memvwr_cursor_blob_idx + a:number
+  elseif a:mode == 1
+    let l:blob_idx = s:memvwr_last_valid_cursor_blob_idx + a:number
 
-    elseif a:mode == 2 && a:number >= 0 && a:number < s:memvwr_bytes_per_row
-      let l:blob_idx = (s:memvwr_cursor_line - 1) * s:memvwr_bytes_per_row + a:number
-
-    endif
+  elseif a:mode == 2 && a:number >= 0 && a:number < s:memvwr_bytes_per_row
+    let l:blob_idx = (s:memvwr_cursor_line - 1) * s:memvwr_bytes_per_row + a:number
   endif
 
   if l:blob_idx >= 0 && l:blob_idx < s:memvwr_blob_len
@@ -1343,21 +1383,13 @@ function! MemvwrSetCursorToByte(cmd)
     let l:num_str = l:cmd_str[1:]
   endif
 
-  let l:base = 10
-  if strlen(l:num_str) > 1 && l:num_str[0] == '0'
-    let l:ch = l:num_str[1]
-    let l:base = (l:ch ==? 'x') ? 16
-             \ : (l:ch ==? 'b') ? 2
-             \ :                  8
-  endif
-
-  let l:number = str2nr(l:num_str, l:base) * l:sign
+  let l:number = MemvwrStr2Nr(l:num_str) * l:sign
 
   let l:byte_info = MemvwrGetByteInfo(l:number, l:mode)
   if !empty(l:byte_info)
     call cursor(l:byte_info[1], l:byte_info[2])
   else
-    echomsg '[MemvwrSetCursorToByte] Invalid argument command: ' . a:cmd
+    echomsg printf('[MemvwrSetCursorToByte] Empty list returned from MemevwrGetByteInfo(%d, %d)', l:number, a:mode)
   endif
 endfunction
 
@@ -1368,6 +1400,17 @@ function! MemvwrRestoreLastValidCursor(goto_winid=0)
   if a:goto_winid != s:memvwr_winid && a:goto_winid != 0
     call win_gotoid(a:goto_winid)
   endif
+endfunction
+
+function! MemvwrStr2Nr(number_str)
+  let l:base = 10
+  if strlen(a:number_str) > 1 && a:number_str[0] == '0'
+    let l:ch = a:number_str[1]
+    let l:base = (l:ch ==? 'x') ? 16
+             \ : (l:ch ==? 'b') ? 2
+             \ :                  8
+  endif
+  return str2nr(a:number_str, l:base)
 endfunction
 
 function! MemvwrShiftLeft(lhs, rhs)
@@ -1489,6 +1532,8 @@ command! -nargs=1 MemvwrRestyle call s:MemvwrRe('addr_style', <args>)
 command!          MemvwrDI      call s:MemvwrWinInfoOpen()
 
 command! -nargs=1 -complete=file MemvwrFopen call s:MemvwrOpen() | call MemvwrFromFile(<q-args>, 0, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
+
+command! -nargs=+ MemvwrWriteByte call s:MemvwrWriteByte(<f-args>)
 
 command! -nargs=1 ByteJump call MemvwrSetCursorToByte(<q-args>)
 command! -nargs=1 B        call MemvwrSetCursorToByte(<q-args>)

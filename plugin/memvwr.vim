@@ -625,7 +625,7 @@ function! s:MemvwrPopupInspectorToggle()
 
     if has('nvim')
       let l:win_width  = 31
-      let l:win_height = 12
+      let l:win_height = (s:memvwr_cursor_is_valid) ? 12 : 1
       let l:options = #{
             \   relative: 'cursor'
             \ , row: 1
@@ -662,11 +662,7 @@ endfunction
 
 function! s:MemvwrPopupInspectorUpdate()
   if s:memvwr_popup_inspector_bufnr > 0 && win_getid() == s:memvwr_winid
-    if has('nvim')
-      call nvim_win_set_config(s:memvwr_popup_inspector_winid, #{relative: 'cursor', row: 2, col: s:memvwr_fmt_width})
-    else
-      call popup_move(s:memvwr_popup_inspector_winid, #{line: 'cursor+2', col: 'cursor+'.s:memvwr_fmt_width})
-    endif
+    let l:win_height = 12
 
     if s:memvwr_cursor_is_valid
       " TODO: consider doing this only when CursorHold (see `:help CursorHold`)
@@ -686,8 +682,20 @@ function! s:MemvwrPopupInspectorUpdate()
              \ , printf("  f32:    %+1g", s:InspectFloat32(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ , printf("  f64:    %+1g", s:InspectFloat64(s:memvwr_cursor_blob_idx, s:memvwr_is_little_endian))
              \ ])
-      call setbufline(s:memvwr_popup_inspector_bufnr, 1, l:inspector_lines)
+
+    else
+      call deletebufline(s:memvwr_popup_inspector_bufnr, 1, '$')
+      let l:inspector_lines = ['=> NULL']
+      let l:win_height      = 1
     endif
+
+    if has('nvim')
+      call nvim_win_set_config(s:memvwr_popup_inspector_winid, #{relative: 'cursor', row: 2, col: s:memvwr_fmt_width, height: l:win_height})
+    else
+      call popup_move(s:memvwr_popup_inspector_winid, #{line: 'cursor+2', col: 'cursor+'.s:memvwr_fmt_width})
+    endif
+
+    call setbufline(s:memvwr_popup_inspector_bufnr, 1, l:inspector_lines)
   endif
 endfunction
 

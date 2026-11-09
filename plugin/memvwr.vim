@@ -100,6 +100,9 @@ let s:memvwr_cursor_match_col = -1
 let s:memvwr_cursor_match_len = -1
 
 let s:memvwr_last_valid_cursor_blob_idx = 0
+let s:memvwr_byte_jump = 0
+
+let s:save_showmode = 1
 
 "------------------------------
 " Data visualization & Pop-up Windows
@@ -359,6 +362,24 @@ function! s:MemvwrSetCursorToMatch()
   endif
 endfunction
 
+function! s:MemvwrByteJumpToggle()
+  if s:memvwr_byte_jump == 0
+    let s:memvwr_byte_jump = 1
+    let l:byte_info = MemvwrGetByteInfo(s:memvwr_last_valid_cursor_blob_idx)
+    call cursor(l:byte_info[1], l:byte_info[2])
+    nnoremap <silent> <buffer> h     :call MemvwrSetCursorToByte('-1')<CR>
+    nnoremap <silent> <buffer> l     :call MemvwrSetCursorToByte('+1')<CR>
+    nnoremap <silent> <buffer> <Esc> :call <SID>MemvwrByteJumpToggle()<CR>
+    echohl ModeMsg | echo '-- BYTE JUMP --' | echohl None
+  else
+    let s:memvwr_byte_jump = 0
+    silent! nunmap <buffer> h
+    silent! nunmap <buffer> l
+    silent! nunmap <buffer> <Esc>
+    echohl ModeMsg | echo '-- NORMAL --' | echohl None
+  endif
+endfunction
+
 
 "------------------------------
 " Data visualization & Pop-up windows
@@ -476,8 +497,9 @@ function! s:MemvwrWinInfoUpdate()
            \ ,        '  [%] jump to cursor match'
            \ ,        '  [i] toggle inspector pop-up'
            \ ,        '  [I] open info pop-up'
-           \ ,        '  [r] edit byte mode'
+           \ ,        '  [J] toggle byte jump mode'
            \ ,        '  [K] open this window (info)'
+           \ ,        '  [r] edit byte mode'
            \ ,        '  [S] swap endianness'
            \ ,        '=> Debug State'
            \ ])
@@ -551,6 +573,14 @@ function! s:MemvwrPopupOpenInfo()
          \ , printf("  BPR:        %d", s:memvwr_bytes_per_row)
          \ , printf("  FMT:        %s", s:memvwr_fmt)
          \ , printf("  ADDR_STYLE: %d", s:memvwr_addr_style)
+         \ ,        '=> Hotkeys'
+         \ ,        '  [%] jump to cursor match'
+         \ ,        '  [i] toggle inspector pop-up'
+         \ ,        '  [I] open this info pop-up'
+         \ ,        '  [J] toggle byte jump mode'
+         \ ,        '  [K] open info window'
+         \ ,        '  [r] edit byte mode'
+         \ ,        '  [S] swap endianness'
          \ ])
 
   silent call deletebufline(s:memvwr_popup_info_bufnr, 1, '$')
@@ -559,7 +589,7 @@ function! s:MemvwrPopupOpenInfo()
   let l:popup_title = printf("[%d]%s", s:memvwr_popup_info_bufnr, s:memvwr_popup_info_name)
 
   if has('nvim')
-    let l:win_width  = 28
+    let l:win_width  = 29
     let l:win_height = len(l:info_lines) 
     let l:options = #{
           \   relative: 'cursor'
@@ -1205,7 +1235,11 @@ function! s:MemvwrEditByteModeEnter()
   call cursor(s:memvwr_editing_byte_info[1], s:memvwr_editing_byte_info[2])
   call s:MemvwrUIUpdate()
   call matchaddpos('IncSearch', [[s:memvwr_cursor_line, s:memvwr_cursor_col, s:memvwr_fmt_width]])
-  execute 'startreplace'
+
+  let s:save_showmode = &showmode
+  let &showmode = 0
+  silent! execute 'startreplace'
+  echohl ModeMsg | echo '-- EDIT BYTE --' | echohl None
 
   augroup MemvwrEditingMode
     autocmd!
@@ -1219,7 +1253,10 @@ endfunction
 function! s:MemvwrEditByteModeLeave()
   call s:MemvwrWriteDirtyByte(s:memvwr_editing_byte_info[0])
   call cursor(s:memvwr_editing_byte_info[1], s:memvwr_editing_byte_info[2])
+  let &showmode = s:save_showmode
+  echo ''
   silent! autocmd! MemvwrEditingMode
+  silent! iunmap <buffer> <CR>
 endfunction
 
 " NOTE: see `:help InsertCharPre`
@@ -1518,7 +1555,7 @@ function! MemvwrSetCursorToByte(cmd)
   if !empty(l:byte_info)
     call cursor(l:byte_info[1], l:byte_info[2])
   else
-    echomsg printf('[MemvwrSetCursorToByte] Empty list returned from MemevwrGetByteInfo(%d, %d)', l:number, a:mode)
+    echomsg printf('[MemvwrSetCursorToByte] Empty list returned from MemevwrGetByteInfo(%d, %d)', l:number, l:mode)
   endif
 endfunction
 
@@ -1666,9 +1703,7 @@ command!          MemvwrDI      call s:MemvwrWinInfoOpen()
 command! -nargs=1 -complete=file MemvwrFopen call s:MemvwrOpen() | call MemvwrFromFile(<q-args>, 0, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
 
 command! -nargs=+ MemvwrWriteByte call s:MemvwrWriteByte(<f-args>)
-
-command! -nargs=1 ByteJump call MemvwrSetCursorToByte(<q-args>)
-command! -nargs=1 B        call MemvwrSetCursorToByte(<q-args>)
+command! -nargs=1 MemvwrByteJump  call MemvwrSetCursorToByte(<q-args>)
 
 command! MemvwrPopinfo            call s:MemvwrPopupOpenInfo()
 command! MemvwrPopinspectorToggle call s:MemvwrPopupInspectorToggle()
@@ -1680,7 +1715,8 @@ augroup MemvwrAUG
   autocmd FileType memvwr nnoremap   <silent> <buffer> % :call <SID>MemvwrSetCursorToMatch()<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> I :MemvwrPopinfo<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> i :MemvwrPopinspectorToggle<CR>
-  autocmd FileType memvwr nnoremap   <silent> <buffer> r :call <SID>MemvwrEditByteModeEnter()<CR>
+  autocmd FileType memvwr nnoremap   <silent> <buffer> J :call <SID>MemvwrByteJumpToggle()<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> K :MemvwrDI<CR>
+  autocmd FileType memvwr nnoremap   <silent> <buffer> r :call <SID>MemvwrEditByteModeEnter()<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> S :MemvwrSwapEndianness<CR>
 augroup END

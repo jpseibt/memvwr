@@ -38,7 +38,7 @@ let g:loaded_memvwr = 1
 "    -> It would be nice to update or highlight only bytes that changed from a
 "       previous visualization (step). Even crazier, diffing two views, or whatever.
 " [x] reformat commands should save the cursor location (byte number under cursor)
-" [o] edit values, both from bytes field or ascii preview.
+" [x] edit values, both from bytes field or ascii preview.
 " [x] create memvwr from file.
 " [ ] save to file.
 " [ ] poke memory of debuggee (termdebug).
@@ -68,6 +68,7 @@ let s:memvwr_timestamp     = '__:__:__'
 let s:memvwr_start_addr    = 0x0
 let s:memvwr_bytes_per_row = 16
 let s:memvwr_fmt           = 'hex'
+let s:memvwr_fmt_base      = 16
 let s:memvwr_fmt_width     = 2 "ff a8 8b " (width without separator ' ')
 
 "------------------------------
@@ -126,6 +127,17 @@ let s:f64_sign     = 0
 let s:f64_exponent = 0
 let s:f64_mantissa = 0
 let s:f64_type     = '_' " [Normal, Infinity, NaN, Zero, Subnormal]
+
+"------------------------------
+" Editing the blob
+"
+let s:memvwr_editing_byte_info = []
+let s:VALID_CHARS = {
+      \   '16': '0123456789ABCDEFabcdef',
+      \   '10': '0123456789',
+      \   '8':  '01234567',
+      \   '2':  '01'
+      \ }
 
 
 " Create and setup buffer/window variables, or goto Memvwr window
@@ -238,21 +250,26 @@ function! s:MemvwrUpdateLayout()
   "
   if s:memvwr_fmt == 'x' || s:memvwr_fmt == 'hex'
     let l:bytes_format_str = '%02x'
+    let s:memvwr_fmt_base  = 16
     let s:memvwr_fmt_width = 2
   elseif s:memvwr_fmt == 'b' || s:memvwr_fmt == 'bin'
     let l:bytes_format_str = '%08b'
+    let s:memvwr_fmt_base  = 2
     let s:memvwr_fmt_width = 8
   elseif s:memvwr_fmt == 'd' || s:memvwr_fmt == 'dec'
     let l:bytes_format_str = '%3d'
+    let s:memvwr_fmt_base  = 10
     let s:memvwr_fmt_width = 3
   elseif s:memvwr_fmt == 'o' || s:memvwr_fmt == 'oct'
     let l:bytes_format_str = '%3o'
+    let s:memvwr_fmt_base  = 8
     let s:memvwr_fmt_width = 3
   else
-    echomsg '[s:MemvwrUpdateLayout] Invalid FMT "' . s:memvwr_fmt . '". Using fallback.'
-    let s:memvwr_fmt = 'fallback'
-    let l:bytes_format_str = '0x%02x'
-    let s:memvwr_fmt_width = 4
+    echomsg '[s:MemvwrUpdateLayout] Invalid FMT "' . s:memvwr_fmt . '". Using hex as fallback.'
+    let s:memvwr_fmt       = 'hex'
+    let l:bytes_format_str = '%02x'
+    let s:memvwr_fmt_base  = 16
+    let s:memvwr_fmt_width = 2
   endif
 
   " Update format strings, bytes and ASCII preview start column
@@ -459,6 +476,7 @@ function! s:MemvwrWinInfoUpdate()
            \ ,        '  [%] jump to cursor match'
            \ ,        '  [i] toggle inspector pop-up'
            \ ,        '  [I] open info pop-up'
+           \ ,        '  [r] edit byte mode'
            \ ,        '  [K] open this window (info)'
            \ ,        '  [S] swap endianness'
            \ ,        '=> Debug State'
@@ -960,6 +978,7 @@ function! s:MemvwrStateStr()
          \ , printf("%-*s", 32, 's:memvwr_start_addr:')                 . s:memvwr_start_addr
          \ , printf("%-*s", 32, 's:memvwr_bytes_per_row:')              . s:memvwr_bytes_per_row
          \ , printf("%-*s", 32, 's:memvwr_fmt:')                        . s:memvwr_fmt
+         \ , printf("%-*s", 32, 's:memvwr_fmt_base:')                   . s:memvwr_fmt_base
          \ , printf("%-*s", 32, 's:memvwr_fmt_width:')                  . s:memvwr_fmt_width
          \ , printf("%-*s", 32, 's:memvwr_addr_style:')                 . s:memvwr_addr_style
          \ , printf("%-*s", 32, 's:memvwr_header_str:')                 . s:memvwr_header_str
@@ -993,6 +1012,7 @@ function! s:MemvwrStateStr()
          \ , printf("%-*s", 32, 's:f64_exponent:')                      . s:f64_exponent
          \ , printf("%-*s", 32, 's:f64_mantissa:')                      . s:f64_mantissa
          \ , printf("%-*s", 32, 's:f64_type:')                          . s:f64_type
+         \ , printf("%-*s", 32, 's:memvwr_editing_byte_info:')          . string(s:memvwr_editing_byte_info)
          \ ])
 
   return l:lines
@@ -1100,10 +1120,15 @@ function! s:MemvwrWriteByte(idx, value)
     return
   endif
 
+  if l:value_num == s:memvwr_blob[l:byte_idx]
+    echomsg '[s:MemvwrWriteByte] Value argument and byte at index are the same (a:value=' . a:value . '). Aborting...'
+    return
+  endif
+
   let s:memvwr_blob[l:byte_idx] = l:value_num
 
-  let l:byte_str = printf(s:memvwr_format_str_bytes, l:value_num)
-  let l:ascii_str = (l:value_num >= 33 && l:value_num <= 126) ? nr2char(l:value_num) : '.'
+  let l:byte_str   = printf(s:memvwr_format_str_bytes, l:value_num)
+  let l:ascii_char = (l:value_num >= 33 && l:value_num <= 126) ? nr2char(l:value_num) : '.'
 
   " info list = [blob_idx, line, bytes col, ascii col]
   " NOTE: columns start at col 1, so -1 for using them as string indexes:
@@ -1117,13 +1142,103 @@ function! s:MemvwrWriteByte(idx, value)
   let l:new_byte_line_str  = slice(l:byte_line_str, 0, l:bytes_col)
   let l:new_byte_line_str .= l:byte_str . ' '
   let l:new_byte_line_str .= slice(l:byte_line_str, l:bytes_col + s:memvwr_fmt_width + 1, l:ascii_col)
-  let l:new_byte_line_str .= l:ascii_str
+  let l:new_byte_line_str .= l:ascii_char
   let l:new_byte_line_str .= slice(l:byte_line_str, l:ascii_col + 1)
 
   call setbufline(s:memvwr_bufnr, l:line, l:new_byte_line_str)
   call s:MemvwrUIUpdate()
 endfunction
 
+" Parse the value of the byte representation in the buffer, and update the blob and ASCII representation
+function! s:MemvwrWriteDirtyByte(idx)
+  let l:byte_idx = type(a:idx) == v:t_number ? a:idx : str2nr(a:idx)
+
+  if l:byte_idx < 0 || l:byte_idx >= s:memvwr_blob_len
+    echomsg '[s:MemvwrWriteDirtyByte] Invalid byte index argument (a:idx=' . a:idx . '). Aborting...'
+    return
+  endif
+
+  let l:byte_info = MemvwrGetByteInfo(l:byte_idx)
+  let l:line      = l:byte_info[1]
+  let l:bytes_col = l:byte_info[2] - 1
+  let l:ascii_col = l:byte_info[3] - 1
+  let l:byte_line_str = getbufoneline(s:memvwr_bufnr, l:line)
+
+  let l:byte_str = slice(l:byte_line_str, l:bytes_col, l:bytes_col + s:memvwr_fmt_width)
+  if l:byte_str[0] == '0' && (s:memvwr_fmt_base == 10 || s:memvwr_fmt_base == 8)
+    if l:byte_str[1] == '0'
+      let l:byte_str = '  ' . l:byte_str[2]
+    else
+      let l:byte_str = ' ' . l:byte_str[1 :]
+    endif
+    let l:byte_line_str = l:byte_line_str[: l:bytes_col-1] . l:byte_str . l:byte_line_str[l:bytes_col+s:memvwr_fmt_width :]
+  endif
+  let l:value_num = MemvwrStr2Nr(trim(l:byte_str), s:memvwr_fmt_base)
+
+  if l:value_num < 0 || l:value_num > 255
+    echomsg '[s:MemvwrWriteDirtyByte] Invalid value parsed from dirty Memvwr buffer (' . l:value_num . '). Aborting...'
+    " Undo the dirty byte representation
+    let l:actual_byte_str = printf(s:memvwr_format_str_bytes, s:memvwr_blob[l:byte_idx])
+    let l:new_byte_line_str = l:byte_line_str[: l:bytes_col-1] . l:actual_byte_str . l:byte_line_str[l:bytes_col+s:memvwr_fmt_width :]
+    call setbufline(s:memvwr_bufnr, l:line, l:new_byte_line_str)
+    return
+  endif
+
+  if l:value_num == s:memvwr_blob[l:byte_idx]
+    echomsg '[s:MemvwrWriteDirtyByte] Parsed value and byte at index are the same (a:idx=' . a:idx . '). Aborting...'
+    " Rewriting the line to get rid of possible leading zeros replaced earlier with spaces
+    call setbufline(s:memvwr_bufnr, l:line, l:byte_line_str)
+    return
+  endif
+
+  let s:memvwr_blob[l:byte_idx] = l:value_num
+
+  let l:ascii_char = (l:value_num >= 33 && l:value_num <= 126) ? nr2char(l:value_num) : '.'
+  let l:new_byte_line_str = l:byte_line_str[: l:ascii_col-1] . l:ascii_char . l:byte_line_str[l:ascii_col+1 :]
+
+  call setbufline(s:memvwr_bufnr, l:line, l:new_byte_line_str)
+  call s:MemvwrUIUpdate()
+endfunction
+
+function! s:MemvwrEditByteModeEnter()
+  let s:memvwr_editing_byte_info = MemvwrGetByteInfo(s:memvwr_last_valid_cursor_blob_idx)
+  call cursor(s:memvwr_editing_byte_info[1], s:memvwr_editing_byte_info[2])
+  call s:MemvwrUIUpdate()
+  call matchaddpos('IncSearch', [[s:memvwr_cursor_line, s:memvwr_cursor_col, s:memvwr_fmt_width]])
+  execute 'startreplace'
+
+  augroup MemvwrEditingMode
+    autocmd!
+    autocmd InsertLeave,WinLeave <buffer> ++once call s:MemvwrEditByteModeLeave()
+    autocmd InsertCharPre        <buffer> call s:MemvwrEditByteModeCharPre()
+    autocmd CursorMovedI         <buffer> call s:MemvwrEditByteModeMovedI()
+    inoremap            <silent> <buffer> <CR> <Esc>
+  augroup END
+endfunction
+
+function! s:MemvwrEditByteModeLeave()
+  call s:MemvwrWriteDirtyByte(s:memvwr_editing_byte_info[0])
+  call cursor(s:memvwr_editing_byte_info[1], s:memvwr_editing_byte_info[2])
+  silent! autocmd! MemvwrEditingMode
+endfunction
+
+" NOTE: see `:help InsertCharPre`
+function! s:MemvwrEditByteModeCharPre()
+  if stridx(s:VALID_CHARS[s:memvwr_fmt_base], v:char) == -1
+    let v:char = ''
+  else
+    let v:char = tolower(v:char)
+  endif
+endfunction
+
+" NOTE: see `:help CursorMovedI`
+function! s:MemvwrEditByteModeMovedI()
+  let l:cursor_line = line('.')
+  let l:cursor_col  = col('.')
+  if l:cursor_line != s:memvwr_editing_byte_info[1] || l:cursor_col > (s:memvwr_editing_byte_info[2] + s:memvwr_fmt_width - 1) || l:cursor_col < (s:memvwr_editing_byte_info[2])
+    call cursor(s:memvwr_editing_byte_info[1], s:memvwr_editing_byte_info[2])
+  endif
+endfunction
 
 "============================================================
 " Global interface & Bit-shift ops
@@ -1223,6 +1338,8 @@ function! MemvwrGetInfo(key='all')
       let l:result = s:memvwr_bytes_per_row
     elseif a:key == 'fmt'
       let l:result = s:memvwr_fmt
+    elseif a:key == 'fmt_base'
+      let l:result = s:memvwr_fmt_base
     elseif a:key == 'fmt_width'
       let l:result = s:memvwr_fmt_width
     elseif a:key == 'timestamp'
@@ -1289,6 +1406,8 @@ function! MemvwrGetInfo(key='all')
       let l:result = s:f64_mantissa
     elseif a:key == 'f64_type'
       let l:result = s:f64_type
+    elseif a:key == 'editing_byte_info'
+      let l:result = s:memvwr_editing_byte_info
     else
       echomsg '[MemvwrGetInfo] Invalid key argument "' . a:key . '".'
     endif
@@ -1303,6 +1422,7 @@ function! MemvwrGetInfo(key='all')
           \ , 'start_addr': s:memvwr_start_addr
           \ , 'bytes_per_row': s:memvwr_bytes_per_row
           \ , 'fmt': s:memvwr_fmt
+          \ , 'fmt_base': s:memvwr_fmt_base
           \ , 'fmt_width': s:memvwr_fmt_width
           \ , 'timestamp': s:memvwr_timestamp
           \ , 'addr_style': s:memvwr_addr_style
@@ -1337,6 +1457,7 @@ function! MemvwrGetInfo(key='all')
           \ , 'f64_exponent': s:f64_exponent
           \ , 'f64_mantissa': s:f64_mantissa
           \ , 'f64_type': s:f64_type
+          \ , 'editing_byte_info': s:memvwr_editing_byte_info
           \ }
   endif
 
@@ -1410,13 +1531,16 @@ function! MemvwrRestoreLastValidCursor(goto_winid=0)
   endif
 endfunction
 
-function! MemvwrStr2Nr(number_str)
-  let l:base = 10
-  if strlen(a:number_str) > 1 && a:number_str[0] == '0'
-    let l:ch = a:number_str[1]
-    let l:base = (l:ch ==? 'x') ? 16
-             \ : (l:ch ==? 'b') ? 2
-             \ :                  8
+function! MemvwrStr2Nr(number_str, base=0)
+  let l:base = a:base
+  if l:base == 0
+    let l:base = 10
+    if strlen(a:number_str) > 1 && a:number_str[0] == '0'
+      let l:ch = a:number_str[1]
+      let l:base = (l:ch ==? 'x') ? 16
+               \ : (l:ch ==? 'b') ? 2
+               \ :                  8
+    endif
   endif
   return str2nr(a:number_str, l:base)
 endfunction
@@ -1556,6 +1680,7 @@ augroup MemvwrAUG
   autocmd FileType memvwr nnoremap   <silent> <buffer> % :call <SID>MemvwrSetCursorToMatch()<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> I :MemvwrPopinfo<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> i :MemvwrPopinspectorToggle<CR>
+  autocmd FileType memvwr nnoremap   <silent> <buffer> r :call <SID>MemvwrEditByteModeEnter()<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> K :MemvwrDI<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> S :MemvwrSwapEndianness<CR>
 augroup END

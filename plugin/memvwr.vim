@@ -40,7 +40,7 @@ let g:loaded_memvwr = 1
 " [x] reformat commands should save the cursor location (byte number under cursor)
 " [x] edit values, both from bytes field or ascii preview.
 " [x] create memvwr from file.
-" [ ] save to file.
+" [x] save to file.
 " [ ] poke memory of debuggee (termdebug).
 " [o] add more information about analysed dump: expression, timestamp, ... (termdebug).
 " [x] inspector for byte combinations (uint32_t, double, etc.), maybe with floating
@@ -58,6 +58,7 @@ let g:loaded_memvwr = 1
 "  ^- NOTE: Without checking this, the inspector is half broken on systems where Number is a
 "           32-bit signed int (the current inspector is assuming 64-bit).
 " [ ] look into making window positions more flexible (look into how winid is being handled).
+" [ ] offset option for alignment, like the padding at the end of a view.
 
 let s:memvwr_name          = '(MEMVWR)'
 let s:memvwr_bufnr         = 0
@@ -367,8 +368,8 @@ function! s:MemvwrByteJumpToggle()
     let s:memvwr_byte_jump = 1
     let l:byte_info = MemvwrGetByteInfo(s:memvwr_last_valid_cursor_blob_idx)
     call cursor(l:byte_info[1], l:byte_info[2])
-    nnoremap <silent> <buffer> h     :call MemvwrSetCursorToByte('-1')<CR>
-    nnoremap <silent> <buffer> l     :call MemvwrSetCursorToByte('+1')<CR>
+    nnoremap <silent> <buffer> h     :<C-U>call MemvwrSetCursorToByte('-' . v:count1)<CR>
+    nnoremap <silent> <buffer> l     :<C-U>call MemvwrSetCursorToByte('+' . v:count1)<CR>
     nnoremap <silent> <buffer> <Esc> :call <SID>MemvwrByteJumpToggle()<CR>
     echohl ModeMsg | echo '-- BYTE JUMP --' | echohl None
   else
@@ -1351,6 +1352,24 @@ function! MemvwrFromFile(fname, start_addr=0, bytes_per_row=16, fmt='x', addr_st
   call MemvwrFromBlob(l:blob, a:start_addr, a:bytes_per_row, a:fmt, a:addr_style)
 endfunction
 
+function! MemvwrWriteToFile(fname='')
+  let l:fname = a:fname
+
+  if empty(l:fname)
+    let l:user_folder = fnamemodify('~', ':p')
+    " Prompt for a file name (input() doesn't add a '\n')
+    let l:fname = input('Write binary blob to: ', l:user_folder . 'memvwr_blob', 'file')
+    echo "\n"
+  endif
+  " input() returns an empty string for <Esc>
+  if empty(l:fname)
+    echomsg '[MemvwrWriteToFile] Aborted...'
+    return
+  endif
+
+  call writefile(s:memvwr_blob, l:fname, 'bs')
+endfunction
+
 " Return a dictionary containing all state and config variables, similar
 " to `getwininfo()`, or return them individually.
 " NOTE: The returned dictionary is a new allocation, but s:memvwr_blob
@@ -1700,7 +1719,8 @@ command! -nargs=1 MemvwrRefmt   call s:MemvwrRe('fmt', <q-args>)
 command! -nargs=1 MemvwrRestyle call s:MemvwrRe('addr_style', <args>)
 command!          MemvwrDI      call s:MemvwrWinInfoOpen()
 
-command! -nargs=1 -complete=file MemvwrFopen call s:MemvwrOpen() | call MemvwrFromFile(<q-args>, 0, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
+command! -nargs=1 -complete=file MemvwrFopen  call s:MemvwrOpen() | call MemvwrFromFile(<q-args>, 0, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
+command! -nargs=? -complete=file MemvwrFwrite call MemvwrWriteToFile(<q-args>)
 
 command! -nargs=+ MemvwrWriteByte call s:MemvwrWriteByte(<f-args>)
 command! -nargs=1 MemvwrByteJump  call MemvwrSetCursorToByte(<q-args>)

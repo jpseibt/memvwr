@@ -135,7 +135,11 @@ let s:f64_type     = '_' " [Normal, Infinity, NaN, Zero, Subnormal]
 "------------------------------
 " Editing the blob
 "
-let s:memvwr_editing_byte_info = []
+let s:memvwr_edit_byte_info         = []
+let s:memvwr_edit_byte_new_val      = -1
+let s:memvwr_edit_byte_prev_val     = -1
+let s:memvwr_edit_byte_prev_bufline = ''
+
 let s:VALID_CHARS = {
       \   '16': '0123456789ABCDEFabcdef',
       \   '10': '0123456789',
@@ -502,6 +506,7 @@ function! s:MemvwrWinInfoUpdate()
            \ ,        '  [K] open this window (info)'
            \ ,        '  [r] edit byte mode'
            \ ,        '  [S] swap endianness'
+           \ ,        '  [u] toggle last edited byte'
            \ ,        '=> Debug State'
            \ ])
 
@@ -582,6 +587,7 @@ function! s:MemvwrPopupOpenInfo()
          \ ,        '  [K] open info window'
          \ ,        '  [r] edit byte mode'
          \ ,        '  [S] swap endianness'
+         \ ,        '  [u] toggle last edited byte'
          \ ])
 
   silent call deletebufline(s:memvwr_popup_info_bufnr, 1, '$')
@@ -752,6 +758,52 @@ endfunction
 "============================================================
 " Utils
 "============================================================
+" Parse the input and return the absolute blob index. Return -1 for invalid input.
+" Modes: 
+"   Absolute | byte at blob index N (0 is the first byte)
+"   Relative | offset N bytes from current or last valid byte under cursor (supports negative N)
+"   Row Byte | row byte N of the cursor line (0 to bytes_per_row - 1)
+" NOTE: the input can have a '+' or '-' prefix for Relative mode, and '|' prefix for Row Byte mode.
+function! s:MemvwrResolveAbsBlobIdx(input)
+  let l:result   = -1
+  let l:blob_idx = -1
+
+  if type(a:input) == v:t_number
+    " Absolute mode
+    let l:blob_idx = a:input
+  else
+    let l:in_str = type(a:input) == v:t_string ? a:input : string(a:input)
+    if !empty(l:in_str)
+      let l:blob_idx = -1
+
+      if l:in_str[0] == '+' || l:in_str[0] == '-'
+        " Relative mode
+        let l:sign     = (l:in_str[0] == '-') ? -1 : 1
+        let l:num_val  = MemvwrStr2Nr(l:in_str[1:]) * l:sign
+        let l:blob_idx = s:memvwr_last_valid_cursor_blob_idx + l:num_val
+
+      elseif l:in_str[0] == '|'
+        " Row Byte mode
+        let l:num_val  = MemvwrStr2Nr(l:in_str[1:])
+        if l:num_val >= 0 && l:num_val < s:memvwr_bytes_per_row
+          let l:blob_idx = (s:memvwr_cursor_line - 1) * s:memvwr_bytes_per_row + l:num_val
+        endif
+
+      else
+        " Absolute mode
+        let l:blob_idx = MemvwrStr2Nr(l:in_str)
+
+      endif
+    endif
+  endif
+
+  if l:blob_idx >= 0 && l:blob_idx < s:memvwr_blob_len
+    let l:result = l:blob_idx
+  endif
+
+  return l:result
+endfunction
+
 " NOTE: Inspect...() functions assume the idx argument will not be less than 0
 function! s:InspectUint8(idx)
   if a:idx + 1 > s:memvwr_blob_len | return -1 | endif
@@ -1043,7 +1095,10 @@ function! s:MemvwrStateStr()
          \ , printf("%-*s", 32, 's:f64_exponent:')                      . s:f64_exponent
          \ , printf("%-*s", 32, 's:f64_mantissa:')                      . s:f64_mantissa
          \ , printf("%-*s", 32, 's:f64_type:')                          . s:f64_type
-         \ , printf("%-*s", 32, 's:memvwr_editing_byte_info:')          . string(s:memvwr_editing_byte_info)
+         \ , printf("%-*s", 32, 's:memvwr_edit_byte_info:')             . string(s:memvwr_edit_byte_info)
+         \ , printf("%-*s", 32, 's:memvwr_edit_byte_new_val:')          . s:memvwr_edit_byte_new_val
+         \ , printf("%-*s", 32, 's:memvwr_edit_byte_prev_val:')         . s:memvwr_edit_byte_prev_val
+         \ , printf("%-*s", 32, 's:memvwr_edit_byte_prev_bufline:')     . s:memvwr_edit_byte_prev_val
          \ ])
 
   return l:lines
@@ -1136,104 +1191,40 @@ command! MemvwrTest call s:MemvwrOpen() | call MemvwrFromBlob(s:memvwr_test_blob
 "============================================================
 " Editing the blob
 "============================================================
-function! s:MemvwrWriteByte(idx, value)
-  let l:byte_idx  = type(a:idx)   == v:t_number ? a:idx   : str2nr(a:idx)
-  let l:value_str = type(a:value) == v:t_string ? a:value : string(a:value)
-  let l:value_num = MemvwrStr2Nr(l:value_str)
+function! s:MemvwrEditByte(idx, value)
+  let l:value_num = type(a:value) == v:t_number ? a:value : MemvwrStr2Nr(string(a:value))
 
-  if l:byte_idx < 0 || l:byte_idx >= s:memvwr_blob_len
-    echomsg '[s:MemvwrWriteByte] Invalid byte index argument (a:idx=' . a:idx . '). Aborting...'
+  let s:memvwr_edit_byte_info = MemvwrGetByteInfo(a:idx)
+  if empty(s:memvwr_edit_byte_info)
+    echomsg '[s:MemvwrEditByte] Invalid byte index argument (a:idx=' . a:idx . '). Aborting...'
     return
   endif
 
-  if l:value_num < 0 || l:value_num > 255
-    echomsg '[s:MemvwrWriteByte] Invalid value argument (a:value=' . a:value . '). Aborting...'
-    return
+  let s:memvwr_edit_byte_new_val      = l:value_num
+  let s:memvwr_edit_byte_prev_val     = s:memvwr_blob[s:memvwr_edit_byte_info[0]]
+  let s:memvwr_edit_byte_prev_bufline = getbufoneline(s:memvwr_bufnr, s:memvwr_edit_byte_info[1])
+
+  if s:MemvwrCheckEditedByte()
+    call s:MemvwrWriteEditedByte()
+    call s:MemvwrUIUpdate()
   endif
-
-  if l:value_num == s:memvwr_blob[l:byte_idx]
-    echomsg '[s:MemvwrWriteByte] Value argument and byte at index are the same (a:value=' . a:value . '). Aborting...'
-    return
-  endif
-
-  let s:memvwr_blob[l:byte_idx] = l:value_num
-
-  let l:byte_str   = printf(s:memvwr_format_str_bytes, l:value_num)
-  let l:ascii_char = (l:value_num >= 33 && l:value_num <= 126) ? nr2char(l:value_num) : '.'
-
-  " info list = [blob_idx, line, bytes col, ascii col]
-  " NOTE: columns start at col 1, so -1 for using them as string indexes:
-  let l:byte_info = MemvwrGetByteInfo(l:byte_idx)
-  let l:line      = l:byte_info[1]
-  let l:bytes_col = l:byte_info[2] - 1
-  let l:ascii_col = l:byte_info[3] - 1
-  let l:byte_line_str = getbufoneline(s:memvwr_bufnr, l:line)
-
-  " Edit the line string replacing the old value and ASCII byte representation with the new one
-  let l:new_byte_line_str  = slice(l:byte_line_str, 0, l:bytes_col)
-  let l:new_byte_line_str .= l:byte_str . ' '
-  let l:new_byte_line_str .= slice(l:byte_line_str, l:bytes_col + s:memvwr_fmt_width + 1, l:ascii_col)
-  let l:new_byte_line_str .= l:ascii_char
-  let l:new_byte_line_str .= slice(l:byte_line_str, l:ascii_col + 1)
-
-  call setbufline(s:memvwr_bufnr, l:line, l:new_byte_line_str)
-  call s:MemvwrUIUpdate()
 endfunction
 
-" Parse the value of the byte representation in the buffer, and update the blob and ASCII representation
-function! s:MemvwrWriteDirtyByte(idx)
-  let l:byte_idx = type(a:idx) == v:t_number ? a:idx : str2nr(a:idx)
-
-  if l:byte_idx < 0 || l:byte_idx >= s:memvwr_blob_len
-    echomsg '[s:MemvwrWriteDirtyByte] Invalid byte index argument (a:idx=' . a:idx . '). Aborting...'
+function! s:MemvwrToggleLastEditedByte()
+  if empty(s:memvwr_edit_byte_info)
+    echomsg '[s:MemvwrToggleLastEditedByte] No byte was edited yet. Aborting...'
     return
   endif
-
-  let l:byte_info = MemvwrGetByteInfo(l:byte_idx)
-  let l:line      = l:byte_info[1]
-  let l:bytes_col = l:byte_info[2] - 1
-  let l:ascii_col = l:byte_info[3] - 1
-  let l:byte_line_str = getbufoneline(s:memvwr_bufnr, l:line)
-
-  let l:byte_str = slice(l:byte_line_str, l:bytes_col, l:bytes_col + s:memvwr_fmt_width)
-  if l:byte_str[0] == '0' && (s:memvwr_fmt_base == 10 || s:memvwr_fmt_base == 8)
-    if l:byte_str[1] == '0'
-      let l:byte_str = '  ' . l:byte_str[2]
-    else
-      let l:byte_str = ' ' . l:byte_str[1 :]
-    endif
-    let l:byte_line_str = l:byte_line_str[: l:bytes_col-1] . l:byte_str . l:byte_line_str[l:bytes_col+s:memvwr_fmt_width :]
-  endif
-  let l:value_num = MemvwrStr2Nr(trim(l:byte_str), s:memvwr_fmt_base)
-
-  if l:value_num < 0 || l:value_num > 255
-    echomsg '[s:MemvwrWriteDirtyByte] Invalid value parsed from dirty Memvwr buffer (' . l:value_num . '). Aborting...'
-    " Undo the dirty byte representation
-    let l:actual_byte_str = printf(s:memvwr_format_str_bytes, s:memvwr_blob[l:byte_idx])
-    let l:new_byte_line_str = l:byte_line_str[: l:bytes_col-1] . l:actual_byte_str . l:byte_line_str[l:bytes_col+s:memvwr_fmt_width :]
-    call setbufline(s:memvwr_bufnr, l:line, l:new_byte_line_str)
-    return
-  endif
-
-  if l:value_num == s:memvwr_blob[l:byte_idx]
-    echomsg '[s:MemvwrWriteDirtyByte] Parsed value and byte at index are the same (a:idx=' . a:idx . '). Aborting...'
-    " Rewriting the line to get rid of possible leading zeros replaced earlier with spaces
-    call setbufline(s:memvwr_bufnr, l:line, l:byte_line_str)
-    return
-  endif
-
-  let s:memvwr_blob[l:byte_idx] = l:value_num
-
-  let l:ascii_char = (l:value_num >= 33 && l:value_num <= 126) ? nr2char(l:value_num) : '.'
-  let l:new_byte_line_str = l:byte_line_str[: l:ascii_col-1] . l:ascii_char . l:byte_line_str[l:ascii_col+1 :]
-
-  call setbufline(s:memvwr_bufnr, l:line, l:new_byte_line_str)
-  call s:MemvwrUIUpdate()
+  call s:MemvwrEditByte(s:memvwr_edit_byte_info[0], s:memvwr_edit_byte_prev_val)
 endfunction
 
 function! s:MemvwrEditByteModeEnter()
-  let s:memvwr_editing_byte_info = MemvwrGetByteInfo(s:memvwr_last_valid_cursor_blob_idx)
-  call cursor(s:memvwr_editing_byte_info[1], s:memvwr_editing_byte_info[2])
+  let s:memvwr_edit_byte_info         = MemvwrGetByteInfo(s:memvwr_last_valid_cursor_blob_idx)
+  let s:memvwr_edit_byte_new_val      = -1
+  let s:memvwr_edit_byte_prev_val     = s:memvwr_blob[s:memvwr_edit_byte_info[0]]
+  let s:memvwr_edit_byte_prev_bufline = getbufoneline(s:memvwr_bufnr, s:memvwr_edit_byte_info[1])
+
+  call cursor(s:memvwr_edit_byte_info[1], s:memvwr_edit_byte_info[2])
   call s:MemvwrUIUpdate()
   call matchaddpos('IncSearch', [[s:memvwr_cursor_line, s:memvwr_cursor_col, s:memvwr_fmt_width]])
 
@@ -1252,8 +1243,18 @@ function! s:MemvwrEditByteModeEnter()
 endfunction
 
 function! s:MemvwrEditByteModeLeave()
-  call s:MemvwrWriteDirtyByte(s:memvwr_editing_byte_info[0])
-  call cursor(s:memvwr_editing_byte_info[1], s:memvwr_editing_byte_info[2])
+  call cursor(s:memvwr_edit_byte_info[1], s:memvwr_edit_byte_info[2])
+  let l:byte_str = expand('<cword>')
+
+  let s:memvwr_edit_byte_new_val = MemvwrStr2Nr(l:byte_str, s:memvwr_fmt_base)
+  if s:MemvwrCheckEditedByte()
+    call s:MemvwrWriteEditedByte()
+    call s:MemvwrUIUpdate()
+  else
+    " Rewriting the line to it's original form
+    call setbufline(s:memvwr_bufnr, s:memvwr_edit_byte_info[1], s:memvwr_edit_byte_prev_bufline)
+  endif
+
   let &showmode = s:save_showmode
   echo ''
   silent! autocmd! MemvwrEditingMode
@@ -1269,14 +1270,108 @@ function! s:MemvwrEditByteModeCharPre()
   endif
 endfunction
 
+" Keep the cursor bound to the byte being edited
 " NOTE: see `:help CursorMovedI`
 function! s:MemvwrEditByteModeMovedI()
   let l:cursor_line = line('.')
   let l:cursor_col  = col('.')
-  if l:cursor_line != s:memvwr_editing_byte_info[1] || l:cursor_col > (s:memvwr_editing_byte_info[2] + s:memvwr_fmt_width - 1) || l:cursor_col < (s:memvwr_editing_byte_info[2])
-    call cursor(s:memvwr_editing_byte_info[1], s:memvwr_editing_byte_info[2])
+  if   l:cursor_line != s:memvwr_edit_byte_info[1]
+  \ || l:cursor_col > (s:memvwr_edit_byte_info[2] + s:memvwr_fmt_width - 1)
+  \ || l:cursor_col < (s:memvwr_edit_byte_info[2])
+
+    call cursor(s:memvwr_edit_byte_info[1], s:memvwr_edit_byte_info[2])
   endif
 endfunction
+
+function! s:MemvwrCheckEditedByte()
+  let l:result = 1
+
+  if empty(s:memvwr_edit_byte_info)
+    echomsg '[s:MemvwrCheckEditedByte] Editing byte info is empty. Probably caused by an invalid blob index.'
+    let l:result = 0
+
+  elseif s:memvwr_edit_byte_new_val < 0 || s:memvwr_edit_byte_new_val > 255
+    echomsg '[s:MemvwrCheckEditedByte] Invalid new value (' . s:memvwr_edit_byte_new_val . ').'
+    let l:result = 0
+
+  elseif s:memvwr_edit_byte_new_val == s:memvwr_edit_byte_prev_val
+    echomsg '[s:MemvwrCheckEditedByte] New value and previous value are the same (' . s:memvwr_edit_byte_new_val . ').'
+    let l:result = 0
+
+  endif
+
+  return l:result
+endfunction
+
+" Update the blob value, and the byte/ASCII representation in the buffer.
+" NOTE: should be called after a `s:MemvwrCheckEditedByte()`.
+function! s:MemvwrWriteEditedByte()
+  " info list = [blob idx, line, bytes col, ascii col]
+  " columns start at col 1, so -1 for using them as string indexes:
+  let l:blob_idx  = s:memvwr_edit_byte_info[0]
+  let l:line      = s:memvwr_edit_byte_info[1]
+  let l:bytes_col = s:memvwr_edit_byte_info[2] - 1
+  let l:ascii_col = s:memvwr_edit_byte_info[3] - 1
+  let l:byte_bufline = s:memvwr_edit_byte_prev_bufline
+
+  let s:memvwr_blob[l:blob_idx] = s:memvwr_edit_byte_new_val
+
+  " Reconstruct the buffer line with the edited byte
+  let l:byte_str   = printf(s:memvwr_format_str_bytes, s:memvwr_edit_byte_new_val)
+  let l:ascii_char = (s:memvwr_edit_byte_new_val >= 33 && s:memvwr_edit_byte_new_val <= 126) ? nr2char(s:memvwr_edit_byte_new_val) : '.'
+
+  " Edit the line string replacing the old value and ASCII byte representation with the new one
+  let l:new_byte_line_str  = slice(l:byte_bufline, 0, l:bytes_col)
+  let l:new_byte_line_str .= l:byte_str . ' '
+  let l:new_byte_line_str .= slice(l:byte_bufline, l:bytes_col + s:memvwr_fmt_width + 1, l:ascii_col)
+  let l:new_byte_line_str .= l:ascii_char
+  let l:new_byte_line_str .= slice(l:byte_bufline, l:ascii_col + 1)
+
+  call setbufline(s:memvwr_bufnr, l:line, l:new_byte_line_str)
+endfunction
+
+"------------------------------
+" Dirty buffer
+"
+" Parse the value of the byte representation in the buffer of the given blob index,
+" and update the blob value and ASCII representation.
+function! s:MemvwrWriteDirtyByte(idx)
+  let s:memvwr_edit_byte_info = MemvwrGetByteInfo(a:idx)
+
+  if empty(s:memvwr_edit_byte_info)
+    echomsg '[s:MemvwrWriteDirtyByte] Invalid byte index argument (a:idx=' . a:idx . '). Aborting...'
+    return
+  endif
+
+  let s:memvwr_edit_byte_prev_val     = s:memvwr_blob[s:memvwr_edit_byte_info[0]]
+  let s:memvwr_edit_byte_prev_bufline = getbufoneline(s:memvwr_bufnr, s:memvwr_edit_byte_info[1])
+
+  " Parsing the byte value from the buffer line
+  let l:line      = l:byte_info[1]
+  let l:bytes_col = l:byte_info[2] - 1
+  let l:ascii_col = l:byte_info[3] - 1
+
+  let l:byte_str = slice(s:memvwr_edit_byte_prev_bufline, l:bytes_col, l:bytes_col + s:memvwr_fmt_width)
+  if l:byte_str[0] == '0' && (s:memvwr_fmt_base == 10 || s:memvwr_fmt_base == 8)
+    if l:byte_str[1] == '0'
+      let l:byte_str = '  ' . l:byte_str[2]
+    else
+      let l:byte_str = ' ' . l:byte_str[1 :]
+    endif
+  endif
+  let l:value_num = MemvwrStr2Nr(trim(l:byte_str), s:memvwr_fmt_base)
+
+  let s:memvwr_edit_byte_new_val = l:value_num
+
+  if s:MemvwrCheckEditedByte()
+    call s:MemvwrWriteEditedByte()
+    call s:MemvwrUIUpdate()
+  else
+    " Rewriting the line to it's original form
+    call setbufline(s:memvwr_bufnr, s:memvwr_edit_byte_info[1], s:memvwr_edit_byte_prev_bufline)
+  endif
+endfunction
+
 
 "============================================================
 " Global interface & Bit-shift ops
@@ -1372,8 +1467,9 @@ endfunction
 
 " Return a dictionary containing all state and config variables, similar
 " to `getwininfo()`, or return them individually.
-" NOTE: The returned dictionary is a new allocation, but s:memvwr_blob
-"       is passed by reference in both cases. See `:help blob-modification`
+" NOTE: The returned dictionary is a new allocation, but s:memvwr_blob and
+"       s:memvwr_edit_byte_info are passed by reference in both cases.
+"       See `:help blob-modification` and `:help list-modification`
 function! MemvwrGetInfo(key='all')
   let l:result = {}
 
@@ -1463,7 +1559,13 @@ function! MemvwrGetInfo(key='all')
     elseif a:key == 'f64_type'
       let l:result = s:f64_type
     elseif a:key == 'editing_byte_info'
-      let l:result = s:memvwr_editing_byte_info
+      let l:result = s:memvwr_edit_byte_info
+    elseif a:key == 'editing_byte_new_val'
+      let l:result = s:memvwr_edit_byte_new_val
+    elseif a:key == 'editing_byte_prev_val'
+      let l:result = s:memvwr_edit_byte_prev_val
+    elseif a:key == 'editing_byte_prev_bufline'
+      let l:result = s:memvwr_edit_byte_prev_bufline
     else
       echomsg '[MemvwrGetInfo] Invalid key argument "' . a:key . '".'
     endif
@@ -1513,31 +1615,25 @@ function! MemvwrGetInfo(key='all')
           \ , 'f64_exponent': s:f64_exponent
           \ , 'f64_mantissa': s:f64_mantissa
           \ , 'f64_type': s:f64_type
-          \ , 'editing_byte_info': s:memvwr_editing_byte_info
+          \ , 'editing_byte_info': s:memvwr_edit_byte_info
+          \ , 'editing_byte_new_val': s:memvwr_edit_byte_new_val
+          \ , 'editing_byte_prev_val': s:memvwr_edit_byte_prev_val
+          \ , 'editing_byte_prev_bufline': s:memvwr_edit_byte_prev_bufline
           \ }
   endif
 
   return l:result
 endfunction
 
-" Return blob index for a byte and coordinates in a list [blob_idx, line, bytes col, ascii col]
-" Modes:
-"   0: Absolute | byte at blob index N (0 is the first byte)
-"   1: Relative | offset N bytes from current or last valid byte under cursor (supports negative N)
-"   2: Row Byte | row byte N of the cursor line (0 to bytes_per_row - 1)
-function! MemvwrGetByteInfo(number, mode=0)
+" Return a byte blob index and it's coordinates in a list [blob idx, line, bytes col, ascii col]
+" Modes: 
+"   Absolute | byte at blob index N (0 is the first byte)
+"   Relative | offset N bytes from current or last valid byte under cursor (supports negative N)
+"   Row Byte | row byte N of the cursor line (0 to bytes_per_row - 1)
+" NOTE: the input idx can have a '+' or '-' prefix for Relative mode, and '|' prefix for Row Byte mode.
+function! MemvwrGetByteInfo(idx)
   let l:result = []
-  let l:blob_idx = -1
-
-  if a:mode == 0
-    let l:blob_idx = a:number
-
-  elseif a:mode == 1
-    let l:blob_idx = s:memvwr_last_valid_cursor_blob_idx + a:number
-
-  elseif a:mode == 2 && a:number >= 0 && a:number < s:memvwr_bytes_per_row
-    let l:blob_idx = (s:memvwr_cursor_line - 1) * s:memvwr_bytes_per_row + a:number
-  endif
+  let l:blob_idx = s:MemvwrResolveAbsBlobIdx(a:idx)
 
   if l:blob_idx >= 0 && l:blob_idx < s:memvwr_blob_len
     let l:line = l:blob_idx / s:memvwr_bytes_per_row + 1
@@ -1551,30 +1647,14 @@ function! MemvwrGetByteInfo(number, mode=0)
   return l:result
 endfunction
 
-function! MemvwrSetCursorToByte(cmd)
-  let l:cmd_str = type(a:cmd) == v:t_string ? a:cmd : string(a:cmd)
-  if empty(l:cmd_str) || !win_gotoid(s:memvwr_winid) | return | endif
+function! MemvwrSetCursorToByte(idx)
+  if !win_gotoid(s:memvwr_winid) | return | endif
 
-  let l:mode    = 0
-  let l:sign    = 1
-  let l:num_str = l:cmd_str
-
-  if l:cmd_str[0] == '+' || l:cmd_str[0] == '-'
-    let l:mode    = 1
-    let l:sign    = (l:cmd_str[0] == '-') ? -1 : 1
-    let l:num_str = l:cmd_str[1:]
-  elseif l:cmd_str[0] == '|'
-    let l:mode    = 2
-    let l:num_str = l:cmd_str[1:]
-  endif
-
-  let l:number = MemvwrStr2Nr(l:num_str) * l:sign
-
-  let l:byte_info = MemvwrGetByteInfo(l:number, l:mode)
+  let l:byte_info = MemvwrGetByteInfo(a:idx)
   if !empty(l:byte_info)
     call cursor(l:byte_info[1], l:byte_info[2])
   else
-    echomsg printf('[MemvwrSetCursorToByte] Empty list returned from MemevwrGetByteInfo(%d, %d)', l:number, l:mode)
+    echomsg '[MemvwrSetCursorToByte] Empty list returned from MemevwrGetByteInfo(' . a:idx . ')'
   endif
 endfunction
 
@@ -1722,8 +1802,9 @@ command!          MemvwrDI      call s:MemvwrWinInfoOpen()
 command! -nargs=1 -complete=file MemvwrFopen  call s:MemvwrOpen() | call MemvwrFromFile(<q-args>, 0, s:memvwr_bytes_per_row, s:memvwr_fmt, s:memvwr_addr_style)
 command! -nargs=? -complete=file MemvwrFwrite call MemvwrWriteToFile(<q-args>)
 
-command! -nargs=+ MemvwrWriteByte call s:MemvwrWriteByte(<f-args>)
-command! -nargs=1 MemvwrByteJump  call MemvwrSetCursorToByte(<q-args>)
+command! -nargs=+ MemvwrEditByte       call s:MemvwrEditByte(<f-args>)
+command!          MemvwrToggleLastEdit call s:MemvwrToggleLastEditedByte() | call MemvwrSetCursorToByte(s:memvwr_edit_byte_info[0])
+command! -nargs=1 MemvwrByteJump       call MemvwrSetCursorToByte(<q-args>)
 
 command! MemvwrPopinfo            call s:MemvwrPopupOpenInfo()
 command! MemvwrPopinspectorToggle call s:MemvwrPopupInspectorToggle()
@@ -1739,4 +1820,5 @@ augroup MemvwrAUG
   autocmd FileType memvwr nnoremap   <silent> <buffer> K :MemvwrDI<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> r :call <SID>MemvwrEditByteModeEnter()<CR>
   autocmd FileType memvwr nnoremap   <silent> <buffer> S :MemvwrSwapEndianness<CR>
+  autocmd FileType memvwr nnoremap   <silent> <buffer> u :MemvwrToggleLastEdit<CR>
 augroup END
